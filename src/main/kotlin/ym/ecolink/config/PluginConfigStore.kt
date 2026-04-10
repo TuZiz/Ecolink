@@ -15,7 +15,7 @@ class PluginConfigStore(
         get() = plugin.dataFolder.resolve("config.yml")
 
     fun loadSettings(): PluginSettings = lock.withLock {
-        PluginSettings.load(YamlConfiguration.loadConfiguration(configFile))
+        PluginSettings.load(YamlConfiguration.loadConfiguration(configFile), plugin.dataFolder)
     }
 
     fun updateEnabledCurrencies(enabled: Collection<String>): PluginSettings = lock.withLock {
@@ -27,6 +27,6 @@ class PluginConfigStore(
                 .sorted()
         )
         yaml.save(configFile)
-        PluginSettings.load(yaml)
+        PluginSettings.load(yaml, plugin.dataFolder)
     }
 }

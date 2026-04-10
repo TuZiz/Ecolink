@@ -34,6 +34,7 @@ class JdbcEconomyRepository(
     private val balancesCurrencyIndex = "${tablePrefix}balances_currency_idx"
     private val ledgerAccountIndex = "${tablePrefix}ledger_account_idx"
     private val rechargeAccountIndex = "${tablePrefix}recharge_account_idx"
+    private val supportsForUpdate = settings.storage.type != DatabaseType.SQLITE
 
     override fun initialize() {
         dataSource.connection.use { connection ->
@@ -790,7 +791,7 @@ class JdbcEconomyRepository(
     private fun findIdentityByUuid(connection: Connection, uuid: UUID, forUpdate: Boolean): AccountIdentity? {
         val sql = buildString {
             append("SELECT uuid, username FROM $accountsTable WHERE uuid = ?")
-            if (forUpdate) {
+            if (forUpdate && supportsForUpdate) {
                 append(" FOR UPDATE")
             }
         }
@@ -824,7 +825,7 @@ class JdbcEconomyRepository(
                 WHERE a.uuid = ? AND b.currency_key = ?
                 """.trimIndent()
             )
-            if (forUpdate) {
+            if (forUpdate && supportsForUpdate) {
                 append(" FOR UPDATE")
             }
         }
@@ -851,7 +852,7 @@ class JdbcEconomyRepository(
                 WHERE transaction_id = ?
                 """.trimIndent()
             )
-            if (forUpdate) {
+            if (forUpdate && supportsForUpdate) {
                 append(" FOR UPDATE")
             }
         }
@@ -936,6 +937,7 @@ class JdbcEconomyRepository(
         return error.sqlState == "23505" ||
             error.sqlState == "23000" ||
             error.errorCode == 1062 ||
+            error.message?.contains("already exists", ignoreCase = true) == true ||
             matchesIndex
     }
 

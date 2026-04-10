@@ -3,6 +3,7 @@ package ym.ecolink.config
 import org.bukkit.configuration.ConfigurationSection
 import org.bukkit.configuration.file.FileConfiguration
 import ym.ecolink.storage.DatabaseType
+import java.io.File
 import java.math.BigDecimal
 import java.math.RoundingMode
 import kotlin.math.max
@@ -98,7 +99,7 @@ data class PluginSettings(
     }
 
     companion object {
-        fun load(config: FileConfiguration): PluginSettings {
+        fun load(config: FileConfiguration, dataFolder: File? = null): PluginSettings {
             val legacyScale = max(0, config.getInt("economy.scale", 2))
             val legacyStartingBalance = BigDecimal(config.getString("economy.starting-balance", "0.00") ?: "0.00")
             val catalog = loadCurrencies(config, legacyScale, legacyStartingBalance)
@@ -108,6 +109,8 @@ data class PluginSettings(
             require(currencies.containsKey(defaultKey)) { "Default currency '$defaultKey' is not enabled." }
 
             val type = DatabaseType.from(config.getString("storage.type"))
+            val sqliteFileRaw = config.getString("storage.sqlite.file", "ecolink.db") ?: "ecolink.db"
+            val sqliteFile = resolveSqliteFile(sqliteFileRaw, dataFolder)
             return PluginSettings(
                 serverId = config.getString("server.id", "server-1") ?: "server-1",
                 workerThreads = max(2, config.getInt("async.worker-threads", 4)),
@@ -150,6 +153,7 @@ data class PluginSettings(
                     host = config.getString("storage.host", "127.0.0.1") ?: "127.0.0.1",
                     port = config.getInt("storage.port", type.defaultPort),
                     database = config.getString("storage.database", "ecolink") ?: "ecolink",
+                    sqliteFile = sqliteFile,
                     schema = config.getString("storage.schema", "public") ?: "public",
                     username = config.getString("storage.username", "postgres") ?: "postgres",
                     password = config.getString("storage.password", "change-me") ?: "change-me",
@@ -292,6 +296,14 @@ data class PluginSettings(
             }
             return if (filtered.endsWith("_")) filtered else "${filtered}_"
         }
+
+        private fun resolveSqliteFile(value: String, dataFolder: File?): String {
+            val candidate = File(value)
+            if (candidate.isAbsolute) {
+                return candidate.absolutePath
+            }
+            return File(dataFolder ?: File("."), value).absolutePath
+        }
     }
 }
 
@@ -310,6 +322,7 @@ data class StorageSettings(
     val host: String,
     val port: Int,
     val database: String,
+    val sqliteFile: String,
     val schema: String,
     val username: String,
     val password: String,

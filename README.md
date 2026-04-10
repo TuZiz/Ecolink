@@ -4,6 +4,7 @@ Ecolink 是一个面向 `Paper`、`Spigot`、`Folia` 的跨服经济插件。
 
 当前核心方向：
 - 异步数据库经济核心
+- 开箱即用默认本地 SQLite
 - `PostgreSQL` 作为默认推荐主库
 - 兼容 `MySQL`
 - 多货币模型，支持运行时启用与删除
@@ -24,7 +25,9 @@ Ecolink 是一个面向 `Paper`、`Spigot`、`Folia` 的跨服经济插件。
 
 ## 数据库建议
 
-默认推荐：`PostgreSQL`
+默认开箱即用：`SQLite`
+
+默认推荐生产环境：`PostgreSQL`
 
 原因：
 - 跨服余额更新的事务语义更清晰
@@ -32,6 +35,11 @@ Ecolink 是一个面向 `Paper`、`Spigot`、`Folia` 的跨服经济插件。
 - 集群规模起来后更稳
 
 如果你当前技术栈已经是 `MySQL`，也可以直接使用。
+
+也就是说：
+
+- 不配远端数据库，默认直接落本地 `SQLite`
+- 要上跨服或生产环境，优先切 `PostgreSQL`
 
 ## 指令设计
 

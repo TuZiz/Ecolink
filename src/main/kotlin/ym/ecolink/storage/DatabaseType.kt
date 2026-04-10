@@ -7,11 +7,16 @@ enum class DatabaseType(
     val driverClassName: String,
     val defaultPort: Int
 ) {
+    SQLITE("sqlite", "org.sqlite.JDBC", 0),
     POSTGRESQL("postgresql", "org.postgresql.Driver", 5432),
     MYSQL("mysql", "com.mysql.cj.jdbc.Driver", 3306);
 
     fun jdbcUrl(settings: StorageSettings): String {
         return when (this) {
+            SQLITE -> {
+                "jdbc:sqlite:${settings.sqliteFile}"
+            }
+
             POSTGRESQL -> {
                 "jdbc:postgresql://${settings.host}:${settings.port}/${settings.database}" +
                     "?reWriteBatchedInserts=true&currentSchema=${settings.schema}"
@@ -26,7 +31,10 @@ enum class DatabaseType(
 
     companion object {
         fun from(raw: String?): DatabaseType {
-            return entries.firstOrNull { it.id.equals(raw, ignoreCase = true) } ?: POSTGRESQL
+            if (raw.isNullOrBlank()) {
+                return SQLITE
+            }
+            return entries.firstOrNull { it.id.equals(raw, ignoreCase = true) } ?: SQLITE
         }
     }
 }

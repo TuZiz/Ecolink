@@ -93,7 +93,9 @@ sync:
     timeout-millis: 2000
 
 storage:
-  type: "postgresql"
+  type: "sqlite"
+  sqlite:
+    file: "ecolink.db"
   host: "127.0.0.1"
   port: 5432
   database: "ecolink"
