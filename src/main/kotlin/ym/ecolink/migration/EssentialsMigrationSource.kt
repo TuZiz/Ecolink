@@ -12,6 +12,7 @@ import kotlin.io.path.nameWithoutExtension
 
 class EssentialsMigrationSource(
     private val rootDirectory: Path,
+    private val currencyKey: String,
     private val scale: Int
 ) {
 
@@ -28,7 +29,7 @@ class EssentialsMigrationSource(
                     val data = YamlMaps.load(file)
                     val username = YamlMaps.string(data["last-account-name"]) ?: uuid.toString()
                     val amount = parseAmount(data["money"])
-                    results += ImportedBalance(uuid, username, amount)
+                    results += ImportedBalance(uuid, username, currencyKey, amount)
                 }
         }
         return results

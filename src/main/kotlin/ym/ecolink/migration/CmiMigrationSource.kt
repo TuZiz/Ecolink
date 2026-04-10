@@ -11,6 +11,7 @@ import java.util.UUID
 
 class CmiMigrationSource(
     private val rootDirectory: Path,
+    private val currencyKey: String,
     private val scale: Int
 ) {
 
@@ -40,7 +41,7 @@ class CmiMigrationSource(
                             resultSet.getBigDecimal("Balance"),
                             resultSet.getString("Economy")
                         )
-                        results += ImportedBalance(uuid, username, balance)
+                        results += ImportedBalance(uuid, username, currencyKey, balance)
                     }
                     return results
                 }
@@ -71,7 +72,7 @@ class CmiMigrationSource(
                             resultSet.getBigDecimal("Balance"),
                             resultSet.getString("Economy")
                         )
-                        results += ImportedBalance(uuid, usernameValue, balance)
+                        results += ImportedBalance(uuid, usernameValue, currencyKey, balance)
                     }
                     return results
                 }

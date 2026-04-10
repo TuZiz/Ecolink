@@ -15,7 +15,7 @@ class EconomyService(
     private val dispatcher: ServerTaskDispatcher
 ) {
 
-    private val cache = ConcurrentHashMap<UUID, CachedAccount>()
+    private val cache = ConcurrentHashMap<CacheKey, CachedAccount>()
     private val nameIndex = ConcurrentHashMap<String, UUID>()
 
     @Volatile
@@ -25,32 +25,36 @@ class EconomyService(
         mutationListener = listener
     }
 
-    fun ensureAccount(identity: AccountIdentity): CompletableFuture<AccountRecord> {
+    fun ensureAccount(identity: AccountIdentity, currencyKey: String = settings.defaultCurrencyKey): CompletableFuture<AccountRecord> {
         return dispatcher.supplyAsync {
-            val cached = cache[identity.uuid]
+            val normalizedCurrency = requireCurrency(currencyKey)
+            val cached = cache[CacheKey(identity.uuid, normalizedCurrency)]
             if (cached != null && cached.isFresh()) {
                 return@supplyAsync cached.record
             }
             remember(
                 repository.getOrCreate(
                     identity = identity,
-                    startingBalance = settings.startingBalance,
+                    currencyKey = normalizedCurrency,
+                    startingBalance = settings.requireCurrency(normalizedCurrency).startingBalance,
                     serverId = settings.serverId
                 )
             )
         }
     }
 
-    fun getBalance(identity: AccountIdentity): CompletableFuture<AccountRecord> {
+    fun getBalance(identity: AccountIdentity, currencyKey: String = settings.defaultCurrencyKey): CompletableFuture<AccountRecord> {
         return dispatcher.supplyAsync {
-            val cached = cache[identity.uuid]
+            val normalizedCurrency = requireCurrency(currencyKey)
+            val cached = cache[CacheKey(identity.uuid, normalizedCurrency)]
             if (cached != null && cached.isFresh() && cached.record.username.equals(identity.username, ignoreCase = true)) {
                 return@supplyAsync cached.record
             }
             remember(
                 repository.getOrCreate(
                     identity = identity,
-                    startingBalance = settings.startingBalance,
+                    currencyKey = normalizedCurrency,
+                    startingBalance = settings.requireCurrency(normalizedCurrency).startingBalance,
                     serverId = settings.serverId
                 )
             )
@@ -60,85 +64,54 @@ class EconomyService(
     fun resolveIdentity(selector: String): CompletableFuture<AccountIdentity?> {
         return dispatcher.supplyAsync {
             parseUuid(selector)?.let { uuid ->
-                val cached = cache[uuid]
-                if (cached != null && cached.isFresh()) {
-                    return@supplyAsync cached.record.toIdentity()
-                }
-                return@supplyAsync repository.findByUuid(uuid)?.let(::remember)?.toIdentity()
+                findCachedIdentity(uuid)?.let { return@supplyAsync it }
+                return@supplyAsync repository.findIdentityByUuid(uuid)
             }
 
             val cachedUuid = nameIndex[selector.lowercase()]
             if (cachedUuid != null) {
-                val cached = cache[cachedUuid]
-                if (cached != null && cached.isFresh()) {
-                    return@supplyAsync cached.record.toIdentity()
-                }
+                findCachedIdentity(cachedUuid)?.let { return@supplyAsync it }
             }
 
-            repository.findByUsername(selector)?.let(::remember)?.toIdentity()
+            repository.findIdentityByUsername(selector)
         }
     }
 
     fun addBalance(
         target: AccountIdentity,
+        currencyKey: String,
         amount: BigDecimal,
         actor: String,
         reason: String
     ): CompletableFuture<AccountRecord> {
-        return dispatcher.supplyAsync {
-            val updated = remember(
-                repository.adjustBalance(
-                    identity = target,
-                    delta = settings.normalize(amount),
-                    startingBalance = settings.startingBalance,
-                    serverId = settings.serverId,
-                    actor = actor,
-                    reason = reason,
-                    action = LedgerAction.ADD,
-                    requireSufficient = false
-                )
-            )
-            publish(updated)
-            updated
-        }
+        return mutateBalance(target, currencyKey, amount, actor, reason, LedgerAction.ADD, requireSufficient = false)
     }
 
     fun takeBalance(
         target: AccountIdentity,
+        currencyKey: String,
         amount: BigDecimal,
         actor: String,
         reason: String
     ): CompletableFuture<AccountRecord> {
-        return dispatcher.supplyAsync {
-            val updated = remember(
-                repository.adjustBalance(
-                    identity = target,
-                    delta = settings.normalize(amount).negate(),
-                    startingBalance = settings.startingBalance,
-                    serverId = settings.serverId,
-                    actor = actor,
-                    reason = reason,
-                    action = LedgerAction.TAKE,
-                    requireSufficient = true
-                )
-            )
-            publish(updated)
-            updated
-        }
+        return mutateBalance(target, currencyKey, amount.negate(), actor, reason, LedgerAction.TAKE, requireSufficient = true)
     }
 
     fun setBalance(
         target: AccountIdentity,
+        currencyKey: String,
         amount: BigDecimal,
         actor: String,
         reason: String
     ): CompletableFuture<AccountRecord> {
         return dispatcher.supplyAsync {
+            val normalizedCurrency = requireCurrency(currencyKey)
             val updated = remember(
                 repository.setBalance(
                     identity = target,
-                    amount = settings.normalize(amount),
-                    startingBalance = settings.startingBalance,
+                    currencyKey = normalizedCurrency,
+                    amount = settings.normalize(normalizedCurrency, amount),
+                    startingBalance = settings.requireCurrency(normalizedCurrency).startingBalance,
                     serverId = settings.serverId,
                     actor = actor,
                     reason = reason
@@ -149,9 +122,38 @@ class EconomyService(
         }
     }
 
+    fun recharge(
+        target: AccountIdentity,
+        currencyKey: String,
+        transactionId: String,
+        amount: BigDecimal,
+        actor: String,
+        reason: String
+    ): CompletableFuture<RechargeReceipt> {
+        return dispatcher.supplyAsync {
+            val normalizedCurrency = requireCurrency(currencyKey)
+            val receipt = repository.applyRecharge(
+                identity = target,
+                currencyKey = normalizedCurrency,
+                transactionId = transactionId,
+                amount = settings.normalize(normalizedCurrency, amount),
+                startingBalance = settings.requireCurrency(normalizedCurrency).startingBalance,
+                serverId = settings.serverId,
+                actor = actor,
+                reason = reason
+            )
+            val remembered = remember(receipt.record)
+            if (!receipt.duplicate) {
+                publish(remembered)
+            }
+            receipt.copy(record = remembered)
+        }
+    }
+
     fun transfer(
         source: AccountIdentity,
         target: AccountIdentity,
+        currencyKey: String,
         amount: BigDecimal,
         actor: String,
         reason: String
@@ -160,11 +162,13 @@ class EconomyService(
             if (source.uuid == target.uuid) {
                 throw IllegalArgumentException("Cannot transfer to self.")
             }
+            val normalizedCurrency = requireCurrency(currencyKey)
             val receipt = repository.transfer(
                 source = source,
                 target = target,
-                amount = settings.normalize(amount),
-                startingBalance = settings.startingBalance,
+                currencyKey = normalizedCurrency,
+                amount = settings.normalize(normalizedCurrency, amount),
+                startingBalance = settings.requireCurrency(normalizedCurrency).startingBalance,
                 serverId = settings.serverId,
                 actor = actor,
                 reason = reason
@@ -177,58 +181,100 @@ class EconomyService(
         }
     }
 
-    fun getTopBalances(page: Int): CompletableFuture<List<AccountRecord>> {
+    fun getTopBalances(page: Int, currencyKey: String = settings.defaultCurrencyKey): CompletableFuture<List<AccountRecord>> {
         return dispatcher.supplyAsync {
+            val normalizedCurrency = requireCurrency(currencyKey)
             val safePage = page.coerceAtLeast(1)
             val limit = settings.feature.topPageSize
             val offset = (safePage - 1) * limit
-            repository.findTopAccounts(limit, offset).map(::remember)
+            repository.findTopAccounts(normalizedCurrency, limit, offset).map(::remember)
         }
     }
 
-    fun getLedger(identity: AccountIdentity, page: Int): CompletableFuture<List<LedgerEntry>> {
+    fun getLedger(
+        identity: AccountIdentity,
+        page: Int,
+        currencyKey: String = settings.defaultCurrencyKey
+    ): CompletableFuture<List<LedgerEntry>> {
         return dispatcher.supplyAsync {
+            val normalizedCurrency = requireCurrency(currencyKey)
             val safePage = page.coerceAtLeast(1)
             val limit = settings.feature.ledgerPageSize
             val offset = (safePage - 1) * limit
-            repository.findLedgerEntries(identity.uuid, limit, offset)
+            repository.findLedgerEntries(identity.uuid, normalizedCurrency, limit, offset)
         }
     }
 
-    fun peekCached(uuid: UUID): AccountRecord? {
-        val cached = cache[uuid]
+    fun peekCached(uuid: UUID, currencyKey: String = settings.defaultCurrencyKey): AccountRecord? {
+        val normalizedCurrency = settings.findCurrency(currencyKey)?.key ?: return null
+        val cached = cache[CacheKey(uuid, normalizedCurrency)]
         return if (cached != null && cached.isFresh()) cached.record else null
     }
 
-    fun peekCached(selector: String): AccountRecord? {
+    fun peekCached(selector: String, currencyKey: String = settings.defaultCurrencyKey): AccountRecord? {
         val uuid = nameIndex[selector.lowercase()] ?: return null
-        return peekCached(uuid)
+        return peekCached(uuid, currencyKey)
     }
 
     fun rememberRemote(record: BalanceSyncRecord) {
+        val normalizedCurrency = requireCurrency(record.currencyKey)
         val incoming = AccountRecord(
             uuid = record.uuid,
             username = record.username,
-            balance = settings.normalize(record.balance),
+            currencyKey = normalizedCurrency,
+            balance = settings.normalize(normalizedCurrency, record.balance),
             version = record.version,
             updatedAt = record.updatedAt
         )
-        val current = cache[record.uuid]
+        val key = CacheKey(record.uuid, normalizedCurrency)
+        val current = cache[key]
         if (current == null || current.record.version <= incoming.version || !current.isFresh()) {
             remember(incoming)
         }
     }
 
-    fun awaitAccount(identity: AccountIdentity): AccountRecord {
-        return getBalance(identity).get(settings.compatibility.vault.syncTimeoutMillis, TimeUnit.MILLISECONDS)
+    fun awaitAccount(identity: AccountIdentity, currencyKey: String = settings.defaultCurrencyKey): AccountRecord {
+        return getBalance(identity, currencyKey).get(settings.compatibility.vault.syncTimeoutMillis, TimeUnit.MILLISECONDS)
     }
 
     fun awaitIdentity(selector: String): AccountIdentity? {
         return resolveIdentity(selector).get(settings.compatibility.vault.syncTimeoutMillis, TimeUnit.MILLISECONDS)
     }
 
+    private fun mutateBalance(
+        target: AccountIdentity,
+        currencyKey: String,
+        delta: BigDecimal,
+        actor: String,
+        reason: String,
+        action: LedgerAction,
+        requireSufficient: Boolean
+    ): CompletableFuture<AccountRecord> {
+        return dispatcher.supplyAsync {
+            val normalizedCurrency = requireCurrency(currencyKey)
+            val updated = remember(
+                repository.adjustBalance(
+                    identity = target,
+                    currencyKey = normalizedCurrency,
+                    delta = settings.normalize(normalizedCurrency, delta),
+                    startingBalance = settings.requireCurrency(normalizedCurrency).startingBalance,
+                    serverId = settings.serverId,
+                    actor = actor,
+                    reason = reason,
+                    action = action,
+                    requireSufficient = requireSufficient
+                )
+            )
+            publish(updated)
+            updated
+        }
+    }
+
     private fun remember(record: AccountRecord): AccountRecord {
-        cache[record.uuid] = CachedAccount(record, System.currentTimeMillis() + settings.cacheTtlMillis)
+        cache[CacheKey(record.uuid, record.currencyKey)] = CachedAccount(
+            record = record,
+            expiresAt = System.currentTimeMillis() + settings.cacheTtlMillis
+        )
         nameIndex[record.username.lowercase()] = record.uuid
         return record
     }
@@ -239,6 +285,7 @@ class EconomyService(
                 serverId = settings.serverId,
                 uuid = record.uuid,
                 username = record.username,
+                currencyKey = record.currencyKey,
                 balance = record.balance,
                 version = record.version,
                 updatedAt = record.updatedAt
@@ -246,9 +293,22 @@ class EconomyService(
         )
     }
 
+    private fun findCachedIdentity(uuid: UUID): AccountIdentity? {
+        return cache.entries.firstOrNull { it.key.uuid == uuid && it.value.isFresh() }?.value?.record?.toIdentity()
+    }
+
+    private fun requireCurrency(currencyKey: String): String {
+        return settings.requireCurrency(currencyKey).key
+    }
+
     private fun parseUuid(raw: String): UUID? {
         return runCatching { UUID.fromString(raw) }.getOrNull()
     }
+
+    private data class CacheKey(
+        val uuid: UUID,
+        val currencyKey: String
+    )
 
     private data class CachedAccount(
         val record: AccountRecord,

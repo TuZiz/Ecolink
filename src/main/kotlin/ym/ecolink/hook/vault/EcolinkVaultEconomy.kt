@@ -1,3 +1,5 @@
+@file:Suppress("OVERRIDE_DEPRECATION")
+
 package ym.ecolink.hook.vault
 
 import net.milkbowl.vault.economy.AbstractEconomy
@@ -17,19 +19,21 @@ class EcolinkVaultEconomy(
     private val economyService: EconomyService
 ) : AbstractEconomy() {
 
+    private val currency = settings.vaultCurrency()
+
     override fun isEnabled(): Boolean = plugin.isEnabled
 
     override fun getName(): String = "Ecolink"
 
     override fun hasBankSupport(): Boolean = false
 
-    override fun fractionalDigits(): Int = settings.balanceScale
+    override fun fractionalDigits(): Int = currency.scale
 
-    override fun format(amount: Double): String = settings.format(BigDecimal.valueOf(amount))
+    override fun format(amount: Double): String = settings.format(currency.key, BigDecimal.valueOf(amount))
 
-    override fun currencyNamePlural(): String = "coins"
+    override fun currencyNamePlural(): String = currency.displayName
 
-    override fun currencyNameSingular(): String = "coin"
+    override fun currencyNameSingular(): String = currency.displayName
 
     override fun hasAccount(playerName: String): Boolean = resolve(playerName) != null
 
@@ -39,9 +43,9 @@ class EcolinkVaultEconomy(
 
     override fun hasAccount(player: OfflinePlayer, worldName: String): Boolean = hasAccount(player)
 
-    override fun getBalance(playerName: String): Double = resolve(playerName)?.let { balance(it) } ?: settings.startingBalance.toDouble()
+    override fun getBalance(playerName: String): Double = resolve(playerName)?.let { balance(it) } ?: currency.startingBalance.toDouble()
 
-    override fun getBalance(player: OfflinePlayer): Double = resolve(player)?.let { balance(it) } ?: settings.startingBalance.toDouble()
+    override fun getBalance(player: OfflinePlayer): Double = resolve(player)?.let { balance(it) } ?: currency.startingBalance.toDouble()
 
     override fun getBalance(playerName: String, world: String): Double = getBalance(playerName)
 
@@ -58,55 +62,43 @@ class EcolinkVaultEconomy(
     override fun withdrawPlayer(playerName: String, amount: Double): EconomyResponse {
         val identity = resolve(playerName)
             ?: return failure(amount, "Account not found: $playerName")
-        return runMutation(identity, BigDecimal.valueOf(amount), false)
+        return runMutation(identity, BigDecimal.valueOf(amount), deposit = false)
     }
 
     override fun withdrawPlayer(player: OfflinePlayer, amount: Double): EconomyResponse {
         val identity = resolve(player)
             ?: return failure(amount, "Account not found: ${player.name ?: player.uniqueId}")
-        return runMutation(identity, BigDecimal.valueOf(amount), false)
+        return runMutation(identity, BigDecimal.valueOf(amount), deposit = false)
     }
 
-    override fun withdrawPlayer(playerName: String, worldName: String, amount: Double): EconomyResponse {
-        return withdrawPlayer(playerName, amount)
-    }
+    override fun withdrawPlayer(playerName: String, worldName: String, amount: Double): EconomyResponse = withdrawPlayer(playerName, amount)
 
-    override fun withdrawPlayer(player: OfflinePlayer, worldName: String, amount: Double): EconomyResponse {
-        return withdrawPlayer(player, amount)
-    }
+    override fun withdrawPlayer(player: OfflinePlayer, worldName: String, amount: Double): EconomyResponse = withdrawPlayer(player, amount)
 
     override fun depositPlayer(playerName: String, amount: Double): EconomyResponse {
         val identity = resolveOrCreate(playerName)
             ?: return failure(amount, "Account not found: $playerName")
-        return runMutation(identity, BigDecimal.valueOf(amount), true)
+        return runMutation(identity, BigDecimal.valueOf(amount), deposit = true)
     }
 
     override fun depositPlayer(player: OfflinePlayer, amount: Double): EconomyResponse {
         val identity = resolveOrCreate(player)
             ?: return failure(amount, "Account not found: ${player.name ?: player.uniqueId}")
-        return runMutation(identity, BigDecimal.valueOf(amount), true)
+        return runMutation(identity, BigDecimal.valueOf(amount), deposit = true)
     }
 
-    override fun depositPlayer(playerName: String, worldName: String, amount: Double): EconomyResponse {
-        return depositPlayer(playerName, amount)
-    }
+    override fun depositPlayer(playerName: String, worldName: String, amount: Double): EconomyResponse = depositPlayer(playerName, amount)
 
-    override fun depositPlayer(player: OfflinePlayer, worldName: String, amount: Double): EconomyResponse {
-        return depositPlayer(player, amount)
-    }
+    override fun depositPlayer(player: OfflinePlayer, worldName: String, amount: Double): EconomyResponse = depositPlayer(player, amount)
 
     override fun createPlayerAccount(playerName: String): Boolean {
         val identity = resolveOrCreate(playerName) ?: return false
-        return runCatching {
-            economyService.awaitAccount(identity)
-        }.isSuccess
+        return runCatching { economyService.awaitAccount(identity, currency.key) }.isSuccess
     }
 
     override fun createPlayerAccount(player: OfflinePlayer): Boolean {
         val identity = resolveOrCreate(player) ?: return false
-        return runCatching {
-            economyService.awaitAccount(identity)
-        }.isSuccess
+        return runCatching { economyService.awaitAccount(identity, currency.key) }.isSuccess
     }
 
     override fun createPlayerAccount(playerName: String, worldName: String): Boolean = createPlayerAccount(playerName)
@@ -145,36 +137,30 @@ class EcolinkVaultEconomy(
     }
 
     private fun resolve(player: OfflinePlayer): AccountIdentity? {
-        val name = player.name
-        if (name != null) {
-            economyService.peekCached(player.uniqueId)?.let { return it.toIdentity() }
-            return runCatching { economyService.awaitAccount(AccountIdentity(player.uniqueId, name)).toIdentity() }.getOrNull()
-        }
+        player.name?.let { return AccountIdentity(player.uniqueId, it) }
         return runCatching { economyService.awaitIdentity(player.uniqueId.toString()) }.getOrNull()
     }
 
     private fun resolveOrCreate(playerName: String): AccountIdentity? {
-        return resolve(playerName)
-            ?: Bukkit.getPlayerExact(playerName)?.let { AccountIdentity(it.uniqueId, it.name) }
+        return resolve(playerName) ?: Bukkit.getPlayerExact(playerName)?.let { AccountIdentity(it.uniqueId, it.name) }
     }
 
     private fun resolveOrCreate(player: OfflinePlayer): AccountIdentity? {
-        return resolve(player)
-            ?: player.name?.let { AccountIdentity(player.uniqueId, it) }
+        return resolve(player) ?: player.name?.let { AccountIdentity(player.uniqueId, it) }
     }
 
     private fun balance(identity: AccountIdentity): Double {
         return runCatching {
-            economyService.awaitAccount(identity).balance.toDouble()
-        }.getOrElse { settings.startingBalance.toDouble() }
+            economyService.awaitAccount(identity, currency.key).balance.toDouble()
+        }.getOrElse { currency.startingBalance.toDouble() }
     }
 
     private fun runMutation(identity: AccountIdentity, amount: BigDecimal, deposit: Boolean): EconomyResponse {
         return try {
             val future = if (deposit) {
-                economyService.addBalance(identity, amount, "Vault", "vault-deposit")
+                economyService.addBalance(identity, currency.key, amount, "Vault", "vault-deposit")
             } else {
-                economyService.takeBalance(identity, amount, "Vault", "vault-withdraw")
+                economyService.takeBalance(identity, currency.key, amount, "Vault", "vault-withdraw")
             }
             val record = future.get(settings.compatibility.vault.syncTimeoutMillis, TimeUnit.MILLISECONDS)
             EconomyResponse(amount.toDouble(), record.balance.toDouble(), EconomyResponse.ResponseType.SUCCESS, null)

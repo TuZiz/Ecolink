@@ -15,6 +15,7 @@ import java.util.logging.Logger
 
 class RedisBalanceSyncService(
     private val localServerId: String,
+    private val defaultCurrencyKey: String,
     private val settings: RedisSyncSettings,
     private val economyService: EconomyService,
     private val logger: Logger
@@ -97,6 +98,7 @@ class RedisBalanceSyncService(
             record.serverId,
             record.uuid.toString(),
             encodedName,
+            record.currencyKey,
             record.balance.toPlainString(),
             record.version.toString(),
             record.updatedAt.toEpochMilli().toString()
@@ -105,15 +107,34 @@ class RedisBalanceSyncService(
 
     private fun decode(payload: String): BalanceSyncRecord {
         val parts = payload.split('|')
-        require(parts.size == 6) { "Invalid sync payload" }
-        val username = String(Base64.getUrlDecoder().decode(parts[2]), Charsets.UTF_8)
-        return BalanceSyncRecord(
-            serverId = parts[0],
-            uuid = UUID.fromString(parts[1]),
-            username = username,
-            balance = BigDecimal(parts[3]),
-            version = parts[4].toLong(),
-            updatedAt = Instant.ofEpochMilli(parts[5].toLong())
-        )
+        return when (parts.size) {
+            6 -> {
+                val username = String(Base64.getUrlDecoder().decode(parts[2]), Charsets.UTF_8)
+                BalanceSyncRecord(
+                    serverId = parts[0],
+                    uuid = UUID.fromString(parts[1]),
+                    username = username,
+                    currencyKey = defaultCurrencyKey,
+                    balance = BigDecimal(parts[3]),
+                    version = parts[4].toLong(),
+                    updatedAt = Instant.ofEpochMilli(parts[5].toLong())
+                )
+            }
+
+            7 -> {
+                val username = String(Base64.getUrlDecoder().decode(parts[2]), Charsets.UTF_8)
+                BalanceSyncRecord(
+                    serverId = parts[0],
+                    uuid = UUID.fromString(parts[1]),
+                    username = username,
+                    currencyKey = parts[3],
+                    balance = BigDecimal(parts[4]),
+                    version = parts[5].toLong(),
+                    updatedAt = Instant.ofEpochMilli(parts[6].toLong())
+                )
+            }
+
+            else -> error("Invalid sync payload")
+        }
     }
 }

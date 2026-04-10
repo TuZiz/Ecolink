@@ -28,7 +28,12 @@ class MigrationService(
     }
 
     private fun migrateCmi(overwrite: Boolean): SourceMigrationReport {
-        val source = CmiMigrationSource(Path.of(settings.migration.cmiDataFolder), settings.balanceScale)
+        val currency = settings.defaultCurrency()
+        val source = CmiMigrationSource(
+            rootDirectory = Path.of(settings.migration.cmiDataFolder),
+            currencyKey = currency.key,
+            scale = currency.scale
+        )
         return repository.importBalances(
             entries = source.load(),
             overwrite = overwrite,
@@ -38,7 +43,12 @@ class MigrationService(
     }
 
     private fun migrateEssentials(overwrite: Boolean): SourceMigrationReport {
-        val source = EssentialsMigrationSource(Path.of(settings.migration.essentialsDataFolder), settings.balanceScale)
+        val currency = settings.defaultCurrency()
+        val source = EssentialsMigrationSource(
+            rootDirectory = Path.of(settings.migration.essentialsDataFolder),
+            currencyKey = currency.key,
+            scale = currency.scale
+        )
         return repository.importBalances(
             entries = source.load(),
             overwrite = overwrite,

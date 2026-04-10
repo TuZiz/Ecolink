@@ -1,4 +1,4 @@
-# PostgreSQL is the recommended primary storage for cross-server economy clusters.
+# PostgreSQL remains the recommended primary storage for cross-server economy clusters.
 # MySQL is still supported when you need it.
 
 server:
@@ -8,10 +8,29 @@ async:
   worker-threads: 4
 
 economy:
+  # Legacy single-currency fallback. Only used when currencies.list is missing.
   currency-symbol: "$"
   scale: 2
   starting-balance: "0.00"
   cache-ttl-millis: 2000
+
+currencies:
+  default-key: "coins"
+  list:
+    coins:
+      display-name: "Coins"
+      symbol: "$"
+      scale: 2
+      starting-balance: "0.00"
+      transferable: true
+      vault-primary: true
+    gems:
+      display-name: "Gems"
+      symbol: "G"
+      scale: 0
+      starting-balance: "0"
+      transferable: false
+      vault-primary: false
 
 feature:
   top-page-size: 10

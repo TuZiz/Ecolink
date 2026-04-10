@@ -26,15 +26,44 @@ class EcolinkPlaceholderExpansion(
             return null
         }
         val identity = AccountIdentity(player.uniqueId, player.name)
-        val cached = economyService.peekCached(player.uniqueId)
-        if (cached == null) {
-            economyService.ensureAccount(identity)
-        }
-        return when (params.lowercase()) {
-            "balance" -> (cached?.balance ?: plugin.bootstrapSettings.startingBalance).toPlainString()
-            "balance_formatted" -> plugin.bootstrapSettings.format(cached?.balance ?: plugin.bootstrapSettings.startingBalance)
-            "server" -> plugin.bootstrapSettings.serverId
+        val settings = plugin.bootstrapSettings
+
+        return when {
+            params.equals("server", ignoreCase = true) -> settings.serverId
+            params.equals("currency", ignoreCase = true) -> settings.defaultCurrency().displayName
+            params.equals("balance", ignoreCase = true) -> balancePlain(identity, settings.defaultCurrencyKey)
+            params.equals("balance_formatted", ignoreCase = true) -> balanceFormatted(identity, settings.defaultCurrencyKey)
+            params.startsWith("balance_formatted_", ignoreCase = true) -> {
+                val currency = settings.findCurrency(params.substringAfter("balance_formatted_")) ?: return null
+                balanceFormatted(identity, currency.key)
+            }
+
+            params.startsWith("balance_", ignoreCase = true) -> {
+                val currency = settings.findCurrency(params.substringAfter('_')) ?: return null
+                balancePlain(identity, currency.key)
+            }
+
             else -> null
         }
+    }
+
+    private fun balancePlain(identity: AccountIdentity, currencyKey: String): String {
+        val settings = plugin.bootstrapSettings
+        val cached = economyService.peekCached(identity.uuid, currencyKey)
+        if (cached == null) {
+            economyService.ensureAccount(identity, currencyKey)
+        }
+        val fallback = settings.requireCurrency(currencyKey).startingBalance
+        return (cached?.balance ?: fallback).toPlainString()
+    }
+
+    private fun balanceFormatted(identity: AccountIdentity, currencyKey: String): String {
+        val settings = plugin.bootstrapSettings
+        val cached = economyService.peekCached(identity.uuid, currencyKey)
+        if (cached == null) {
+            economyService.ensureAccount(identity, currencyKey)
+        }
+        val fallback = settings.requireCurrency(currencyKey).startingBalance
+        return settings.format(currencyKey, cached?.balance ?: fallback)
     }
 }

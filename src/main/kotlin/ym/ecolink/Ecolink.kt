@@ -80,7 +80,8 @@ class Ecolink : JavaPlugin() {
             }
             logger.info(
                 "Ecolink initialized. storage=${created.settings.storage.type.id}, " +
-                    "serverId=${created.settings.serverId}"
+                    "serverId=${created.settings.serverId}, " +
+                    "currencies=${created.settings.listCurrencies().joinToString(",") { it.key }}"
             )
         }
     }
@@ -105,13 +106,19 @@ class Ecolink : JavaPlugin() {
         val repository = JdbcEconomyRepository(
             dataSource = dataSource,
             tablePrefix = settings.storage.tablePrefix,
-            scale = settings.balanceScale
+            settings = settings
         )
         repository.initialize()
         val economyService = EconomyService(settings, repository, dispatcher)
         val migrationService = MigrationService(settings, repository, dispatcher)
         val redisSyncService = if (settings.redisSync.enabled) {
-            RedisBalanceSyncService(settings.serverId, settings.redisSync, economyService, logger).also { sync ->
+            RedisBalanceSyncService(
+                localServerId = settings.serverId,
+                defaultCurrencyKey = settings.defaultCurrencyKey,
+                settings = settings.redisSync,
+                economyService = economyService,
+                logger = logger
+            ).also { sync ->
                 economyService.setMutationListener(sync::publish)
                 sync.start()
             }

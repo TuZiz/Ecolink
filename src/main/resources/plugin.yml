@@ -4,7 +4,7 @@ main: ym.ecolink.Ecolink
 api-version: "26.1.1"
 folia-supported: true
 authors: [ ymxc ]
-description: "Cross-server async economy plugin with PostgreSQL/MySQL storage and CMI/EssentialsX migration."
+description: "Cross-server async economy plugin with multi-currency, idempotent recharge, PostgreSQL/MySQL storage, and CMI/EssentialsX migration."
 softdepend: [ Vault, PlaceholderAPI ]
 
 commands:
@@ -15,13 +15,13 @@ commands:
   balance:
     description: "Check your balance"
     aliases: [ bal, money ]
-    usage: "/balance [player]"
+    usage: "/balance [player] [currency]"
   pay:
     description: "Pay another player"
-    usage: "/pay <player> <amount>"
+    usage: "/pay <player> <amount> [currency]"
   baltop:
     description: "Show the richest accounts"
-    usage: "/baltop [page]"
+    usage: "/baltop [currency] [page]"
 
 permissions:
   ecolink.pay:
@@ -35,6 +35,8 @@ permissions:
   ecolink.ledger.others:
     default: op
   ecolink.admin:
+    default: op
+  ecolink.recharge:
     default: op
   ecolink.migrate:
     default: op
