@@ -13,6 +13,7 @@ data class PluginSettings(
     val defaultCurrencyKey: String,
     val currencies: Map<String, CurrencyDefinition>,
     val cacheTtlMillis: Long,
+    val language: LanguageSettings,
     val feature: FeatureSettings,
     val compatibility: CompatibilitySettings,
     val redisSync: RedisSyncSettings,
@@ -83,6 +84,11 @@ data class PluginSettings(
                 defaultCurrencyKey = defaultKey,
                 currencies = currencies,
                 cacheTtlMillis = config.getLong("economy.cache-ttl-millis", 2_000L).coerceAtLeast(0L),
+                language = LanguageSettings(
+                    locale = config.getString("language.locale", "zh_CN") ?: "zh_CN",
+                    fallbackLocale = config.getString("language.fallback-locale", "en_US") ?: "en_US",
+                    directory = config.getString("language.directory", "lang") ?: "lang"
+                ),
                 feature = FeatureSettings(
                     topPageSize = max(5, config.getInt("feature.top-page-size", 10)),
                     ledgerPageSize = max(5, config.getInt("feature.ledger-page-size", 10))
@@ -216,6 +222,12 @@ data class StorageSettings(
 data class MigrationSettings(
     val cmiDataFolder: String,
     val essentialsDataFolder: String
+)
+
+data class LanguageSettings(
+    val locale: String,
+    val fallbackLocale: String,
+    val directory: String
 )
 
 data class FeatureSettings(

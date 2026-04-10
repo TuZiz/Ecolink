@@ -19,6 +19,8 @@ dependencies {
     compileOnly("me.clip:placeholderapi:2.11.6")
 
     implementation("org.jetbrains.kotlin:kotlin-stdlib-jdk8")
+    implementation("net.kyori:adventure-platform-bukkit:4.3.4")
+    implementation("net.kyori:adventure-text-minimessage:4.20.0")
     implementation("com.zaxxer:HikariCP:6.3.0")
     implementation("org.postgresql:postgresql:42.7.8")
     implementation("com.mysql:mysql-connector-j:9.4.0")

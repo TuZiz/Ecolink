@@ -7,13 +7,14 @@ import ym.ecolink.hook.vault.VaultHook
 import ym.ecolink.command.EcoCommand
 import ym.ecolink.config.PluginSettings
 import ym.ecolink.economy.EconomyService
+import ym.ecolink.i18n.MessagePlaceholder
+import ym.ecolink.i18n.MessageService
 import ym.ecolink.listener.PlayerLifecycleListener
 import ym.ecolink.migration.MigrationService
 import ym.ecolink.platform.ServerTaskDispatcher
 import ym.ecolink.storage.EcolinkDataSourceFactory
 import ym.ecolink.storage.JdbcEconomyRepository
 import ym.ecolink.sync.RedisBalanceSyncService
-import ym.ecolink.util.colorize
 import java.util.concurrent.CompletableFuture
 import java.util.logging.Level
 
@@ -23,6 +24,9 @@ class Ecolink : JavaPlugin() {
         private set
 
     lateinit var dispatcher: ServerTaskDispatcher
+        private set
+
+    lateinit var messages: MessageService
         private set
 
     lateinit var startupFuture: CompletableFuture<PluginRuntime>
@@ -37,6 +41,7 @@ class Ecolink : JavaPlugin() {
     override fun onEnable() {
         saveDefaultConfig()
         bootstrapSettings = PluginSettings.load(config)
+        messages = MessageService(this, bootstrapSettings.language).also { it.initialize() }
         dispatcher = ServerTaskDispatcher(this, bootstrapSettings.workerThreads)
 
         val commandHandler = EcoCommand(this)
@@ -88,6 +93,7 @@ class Ecolink : JavaPlugin() {
 
     override fun onDisable() {
         runtime?.shutdown()
+        messages.close()
         dispatcher.shutdown()
     }
 
@@ -95,9 +101,23 @@ class Ecolink : JavaPlugin() {
 
     fun startupErrorOrNull(): Throwable? = startupFailure
 
-    fun replyLater(sender: CommandSender, message: String) {
+    fun reply(sender: CommandSender, path: String, vararg placeholders: MessagePlaceholder) {
+        messages.send(sender, path, *placeholders)
+    }
+
+    fun replyLines(sender: CommandSender, path: String, vararg placeholders: MessagePlaceholder) {
+        messages.sendLines(sender, path, *placeholders)
+    }
+
+    fun replyLater(sender: CommandSender, path: String, vararg placeholders: MessagePlaceholder) {
         dispatcher.runOnSender(sender) {
-            sender.sendMessage(message.colorize())
+            reply(sender, path, *placeholders)
+        }
+    }
+
+    fun replyLinesLater(sender: CommandSender, path: String, vararg placeholders: MessagePlaceholder) {
+        dispatcher.runOnSender(sender) {
+            replyLines(sender, path, *placeholders)
         }
     }
 

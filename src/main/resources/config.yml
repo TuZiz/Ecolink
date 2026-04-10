@@ -7,6 +7,11 @@ server:
 async:
   worker-threads: 4
 
+language:
+  locale: "zh_CN"
+  fallback-locale: "en_US"
+  directory: "lang"
+
 economy:
   # Legacy single-currency fallback. Only used when currencies.list is missing.
   currency-symbol: "$"

@@ -12,8 +12,8 @@ import ym.ecolink.economy.AccountIdentity
 import ym.ecolink.economy.InsufficientFundsException
 import ym.ecolink.economy.LedgerEntry
 import ym.ecolink.economy.RechargeReceipt
+import ym.ecolink.i18n.ph
 import ym.ecolink.migration.MigrationKind
-import ym.ecolink.util.colorize
 import java.math.BigDecimal
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -60,7 +60,7 @@ class EcoCommand(
         val selfPlayer = sender as? Player
 
         if (args.isEmpty()) {
-            val player = selfPlayer ?: return sendUsage(sender, "/balance <player> [currency]")
+            val player = selfPlayer ?: return sendUsage(sender, "balance-other")
             return queryBalance(sender, runtime, AccountIdentity(player.uniqueId, player.name), runtime.settings.defaultCurrencyKey, selfView = true)
         }
 
@@ -71,7 +71,7 @@ class EcoCommand(
         }
 
         if (!sender.hasPermission("ecolink.balance.others")) {
-            sender.sendMessage("&cYou do not have permission to view other balances.".colorize())
+            plugin.reply(sender, "messages.command.balance.no-permission-others")
             return true
         }
 
@@ -79,7 +79,7 @@ class EcoCommand(
         resolveTarget(runtime, args[0]).whenComplete { target, error ->
             complete(sender, runtime, error) {
                 if (target == null) {
-                    plugin.replyLater(sender, "&cAccount not found: &f${args[0]}")
+                    plugin.replyLater(sender, "messages.common.account-not-found-selector", ph("selector", args[0]))
                     return@complete
                 }
                 queryBalance(sender, runtime, target, currencyKey, selfView = false)
@@ -98,12 +98,18 @@ class EcoCommand(
         val currency = runtime.settings.requireCurrency(currencyKey)
         runtime.economyService.getBalance(target, currency.key).whenComplete { record, error ->
             complete(sender, runtime, error) {
-                val prefix = if (selfView) {
-                    "&eBalance &7(${currency.displayName}): "
+                val messageKey = if (selfView) {
+                    "messages.command.balance.self"
                 } else {
-                    "&e${record.username} &7(${currency.displayName}): "
+                    "messages.command.balance.other"
                 }
-                plugin.replyLater(sender, prefix + "&6${runtime.settings.format(currency.key, record.balance)}")
+                plugin.replyLater(
+                    sender,
+                    messageKey,
+                    ph("player", record.username),
+                    ph("currency", currency.displayName),
+                    ph("amount", runtime.settings.format(currency.key, record.balance))
+                )
             }
         }
         return true
@@ -111,19 +117,19 @@ class EcoCommand(
 
     private fun handlePay(sender: CommandSender, args: Array<out String>): Boolean {
         val runtime = requireReady(sender) ?: return true
-        val player = sender as? Player ?: return sendUsage(sender, "/pay <player> <amount> [currency]")
+        val player = sender as? Player ?: return sendUsage(sender, "pay")
         if (!player.hasPermission("ecolink.pay")) {
-            sender.sendMessage("&cYou do not have permission to pay.".colorize())
+            plugin.reply(sender, "messages.command.pay.no-permission")
             return true
         }
         if (args.size < 2) {
-            return sendUsage(sender, "/pay <player> <amount> [currency]")
+            return sendUsage(sender, "pay")
         }
 
         val currencyKey = parseCurrency(runtime, sender, args.getOrNull(2), runtime.settings.defaultCurrencyKey) ?: return true
         val currency = runtime.settings.requireCurrency(currencyKey)
         if (!currency.transferable) {
-            sender.sendMessage("&cCurrency ${currency.displayName} cannot be transferred.".colorize())
+            plugin.reply(sender, "messages.command.pay.currency-locked", ph("currency", currency.displayName))
             return true
         }
         val amount = parsePositiveAmount(runtime, sender, args[1], currency.key) ?: return true
@@ -132,11 +138,11 @@ class EcoCommand(
         resolveTarget(runtime, args[0]).whenComplete { target, error ->
             complete(sender, runtime, error) {
                 if (target == null) {
-                    plugin.replyLater(sender, "&cAccount not found: &f${args[0]}")
+                    plugin.replyLater(sender, "messages.common.account-not-found-selector", ph("selector", args[0]))
                     return@complete
                 }
                 if (target.uuid == source.uuid) {
-                    plugin.replyLater(sender, "&cYou cannot pay yourself.")
+                    plugin.replyLater(sender, "messages.command.pay.self")
                     return@complete
                 }
                 runtime.economyService.transfer(
@@ -150,13 +156,17 @@ class EcoCommand(
                     complete(sender, runtime, payError) {
                         plugin.replyLater(
                             sender,
-                            "&aPaid &f${receipt.to.username} &6${runtime.settings.format(currency.key, amount)} " +
-                                "&7(balance ${runtime.settings.format(currency.key, receipt.from.balance)})"
+                            "messages.command.pay.sent",
+                            ph("target", receipt.to.username),
+                            ph("amount", runtime.settings.format(currency.key, amount)),
+                            ph("balance", runtime.settings.format(currency.key, receipt.from.balance))
                         )
                         Bukkit.getPlayer(receipt.to.uuid)?.takeIf { it.isOnline }?.let { targetPlayer ->
                             plugin.replyLater(
                                 targetPlayer,
-                                "&aYou received &6${runtime.settings.format(currency.key, amount)} &afrom &f${player.name}&a."
+                                "messages.command.pay.received",
+                                ph("amount", runtime.settings.format(currency.key, amount)),
+                                ph("player", player.name)
                             )
                         }
                     }
@@ -169,7 +179,7 @@ class EcoCommand(
     private fun handleBaltop(sender: CommandSender, args: Array<out String>): Boolean {
         val runtime = requireReady(sender) ?: return true
         if (!sender.hasPermission("ecolink.baltop")) {
-            sender.sendMessage("&cYou do not have permission to use baltop.".colorize())
+            plugin.reply(sender, "messages.command.baltop.no-permission")
             return true
         }
         val first = args.getOrNull(0)
@@ -186,15 +196,23 @@ class EcoCommand(
             complete(sender, runtime, error) {
                 val currency = runtime.settings.requireCurrency(currencyKey)
                 val startRank = (page - 1) * runtime.settings.feature.topPageSize + 1
-                plugin.replyLater(sender, "&6Balance Top &7(${currency.displayName}, page $page)")
+                plugin.replyLater(
+                    sender,
+                    "messages.command.baltop.header",
+                    ph("currency", currency.displayName),
+                    ph("page", page)
+                )
                 if (records.isEmpty()) {
-                    plugin.replyLater(sender, "&7No account data on this page.")
+                    plugin.replyLater(sender, "messages.command.baltop.empty")
                     return@complete
                 }
                 records.forEachIndexed { index, record ->
                     plugin.replyLater(
                         sender,
-                        "&e#${startRank + index} &f${record.username} &7- &6${runtime.settings.format(currency.key, record.balance)}"
+                        "messages.command.baltop.line",
+                        ph("rank", startRank + index),
+                        ph("player", record.username),
+                        ph("amount", runtime.settings.format(currency.key, record.balance))
                     )
                 }
             }
@@ -204,7 +222,7 @@ class EcoCommand(
 
     private fun handleRoot(sender: CommandSender, args: Array<out String>): Boolean {
         if (args.isEmpty()) {
-            sender.sendMessage(helpLines(sender).joinToString("\n") { it.colorize() })
+            sendHelp(sender)
             return true
         }
 
@@ -218,11 +236,11 @@ class EcoCommand(
             "ledger" -> handleLedger(sender, runtime, args)
             "currencies" -> handleCurrencies(sender, runtime)
             "help" -> {
-                sender.sendMessage(helpLines(sender).joinToString("\n") { it.colorize() })
+                sendHelp(sender)
                 true
             }
 
-            else -> sendUsage(sender, "/ecolink <set|add|take|recharge|migrate|ledger|currencies|help>")
+            else -> sendUsage(sender, "root")
         }
     }
 
@@ -233,11 +251,11 @@ class EcoCommand(
         mutation: AdminMutation
     ): Boolean {
         if (!sender.hasPermission("ecolink.admin")) {
-            sender.sendMessage("&cYou do not have admin permission.".colorize())
+            plugin.reply(sender, "messages.command.admin.no-permission")
             return true
         }
         if (args.size < 3) {
-            return sendUsage(sender, "/ecolink ${mutation.keyword} <player> <amount> [currency]")
+            return sendUsage(sender, mutation.usageKey)
         }
 
         val currencyKey = parseCurrency(runtime, sender, args.getOrNull(3), runtime.settings.defaultCurrencyKey) ?: return true
@@ -249,7 +267,7 @@ class EcoCommand(
         resolveTarget(runtime, args[1]).whenComplete { target, error ->
             complete(sender, runtime, error) {
                 if (target == null) {
-                    plugin.replyLater(sender, "&cAccount not found: &f${args[1]}")
+                    plugin.replyLater(sender, "messages.common.account-not-found-selector", ph("selector", args[1]))
                     return@complete
                 }
                 val future = when (mutation) {
@@ -259,15 +277,11 @@ class EcoCommand(
                 }
                 future.whenComplete { record, mutationError ->
                     complete(sender, runtime, mutationError) {
-                        val verb = when (mutation) {
-                            AdminMutation.SET -> "set"
-                            AdminMutation.ADD -> "added"
-                            AdminMutation.TAKE -> "removed"
-                        }
                         plugin.replyLater(
                             sender,
-                            "&a${verb.replaceFirstChar { it.uppercase() }} &f${record.username}&a. " +
-                                "New balance: &6${runtime.settings.format(currencyKey, record.balance)}"
+                            mutation.messageKey,
+                            ph("player", record.username),
+                            ph("amount", runtime.settings.format(currencyKey, record.balance))
                         )
                     }
                 }
@@ -278,18 +292,18 @@ class EcoCommand(
 
     private fun handleRecharge(sender: CommandSender, runtime: PluginRuntime, args: Array<out String>): Boolean {
         if (!sender.hasPermission("ecolink.recharge")) {
-            sender.sendMessage("&cYou do not have recharge permission.".colorize())
+            plugin.reply(sender, "messages.command.recharge.no-permission")
             return true
         }
         if (args.size < 5) {
-            return sendUsage(sender, "/ecolink recharge <player> <currency> <amount> <transactionId> [reason...]")
+            return sendUsage(sender, "recharge")
         }
 
         val currencyKey = parseCurrency(runtime, sender, args[2], null) ?: return true
         val amount = parsePositiveAmount(runtime, sender, args[3], currencyKey) ?: return true
         val transactionId = args[4].trim()
         if (transactionId.isBlank()) {
-            sender.sendMessage("&cTransaction id cannot be blank.".colorize())
+            plugin.reply(sender, "messages.command.recharge.blank-transaction-id")
             return true
         }
         val reason = if (args.size > 5) args.copyOfRange(5, args.size).joinToString(" ") else "manual-recharge"
@@ -297,7 +311,7 @@ class EcoCommand(
         resolveTarget(runtime, args[1]).whenComplete { target, error ->
             complete(sender, runtime, error) {
                 if (target == null) {
-                    plugin.replyLater(sender, "&cAccount not found: &f${args[1]}")
+                    plugin.replyLater(sender, "messages.common.account-not-found-selector", ph("selector", args[1]))
                     return@complete
                 }
                 runtime.economyService.recharge(
@@ -309,7 +323,7 @@ class EcoCommand(
                     reason = reason
                 ).whenComplete { receipt, rechargeError ->
                     complete(sender, runtime, rechargeError) {
-                        plugin.replyLater(sender, rechargeMessage(runtime, receipt))
+                        sendRechargeResult(sender, runtime, receipt)
                     }
                 }
             }
@@ -317,11 +331,20 @@ class EcoCommand(
         return true
     }
 
-    private fun rechargeMessage(runtime: PluginRuntime, receipt: RechargeReceipt): String {
-        val state = if (receipt.duplicate) "&eReplay accepted" else "&aRecharge applied"
-        return "$state &7(tx=${receipt.transactionId}) &f${receipt.record.username} &7-> " +
-            "&6${runtime.settings.format(receipt.record.currencyKey, receipt.amount)} " +
-            "&7(balance ${runtime.settings.format(receipt.record.currencyKey, receipt.record.balance)})"
+    private fun sendRechargeResult(sender: CommandSender, runtime: PluginRuntime, receipt: RechargeReceipt) {
+        val path = if (receipt.duplicate) {
+            "messages.command.recharge.duplicate"
+        } else {
+            "messages.command.recharge.applied"
+        }
+        plugin.replyLater(
+            sender,
+            path,
+            ph("transaction", receipt.transactionId),
+            ph("player", receipt.record.username),
+            ph("amount", runtime.settings.format(receipt.record.currencyKey, receipt.amount)),
+            ph("balance", runtime.settings.format(receipt.record.currencyKey, receipt.record.balance))
+        )
     }
 
     private fun handleMigration(
@@ -330,31 +353,43 @@ class EcoCommand(
         args: Array<out String>
     ): Boolean {
         if (!sender.hasPermission("ecolink.migrate")) {
-            sender.sendMessage("&cYou do not have migration permission.".colorize())
+            plugin.reply(sender, "messages.command.migrate.no-permission")
             return true
         }
         if (args.size < 2) {
-            return sendUsage(sender, "/ecolink migrate <cmi|essentials|all> [overwrite]")
+            return sendUsage(sender, "migrate")
         }
         val kind = MigrationKind.from(args[1]) ?: run {
-            sender.sendMessage("&cUnknown migration source: &f${args[1]}".colorize())
+            plugin.reply(sender, "messages.command.migrate.unknown-source", ph("source", args[1]))
             return true
         }
         val overwrite = parseOverwrite(args.getOrNull(2))
-        sender.sendMessage("&eMigration started in background...".colorize())
+        plugin.reply(sender, "messages.command.migrate.started")
         runtime.migrationService.migrate(kind, overwrite).whenComplete { summary, error ->
             complete(sender, runtime, error) {
                 plugin.replyLater(
                     sender,
-                    "&aMigration complete: &f${summary.sourceLabel()} &7(found ${summary.discovered}, inserted ${summary.inserted}, updated ${summary.updated}, skipped ${summary.skipped}, failed ${summary.failed})"
+                    "messages.command.migrate.summary",
+                    ph("source", summary.sourceLabel()),
+                    ph("discovered", summary.discovered),
+                    ph("inserted", summary.inserted),
+                    ph("updated", summary.updated),
+                    ph("skipped", summary.skipped),
+                    ph("failed", summary.failed)
                 )
                 summary.reports.forEach { report ->
                     plugin.replyLater(
                         sender,
-                        "&7${report.source}: found ${report.discovered}, inserted ${report.inserted}, updated ${report.updated}, skipped ${report.skipped}, failed ${report.failed}"
+                        "messages.command.migrate.report",
+                        ph("source", report.source),
+                        ph("discovered", report.discovered),
+                        ph("inserted", report.inserted),
+                        ph("updated", report.updated),
+                        ph("skipped", report.skipped),
+                        ph("failed", report.failed)
                     )
                     report.sampleErrors.forEach { sample ->
-                        plugin.replyLater(sender, "&8Sample error: $sample")
+                        plugin.replyLater(sender, "messages.command.migrate.sample-error", ph("error", sample))
                     }
                 }
             }
@@ -364,7 +399,7 @@ class EcoCommand(
 
     private fun handleLedger(sender: CommandSender, runtime: PluginRuntime, args: Array<out String>): Boolean {
         if (!sender.hasPermission("ecolink.ledger")) {
-            sender.sendMessage("&cYou do not have permission to view ledger entries.".colorize())
+            plugin.reply(sender, "messages.command.ledger.no-permission")
             return true
         }
 
@@ -401,11 +436,11 @@ class EcoCommand(
         val currencyKey = parseCurrency(runtime, sender, currencyRaw, runtime.settings.defaultCurrencyKey) ?: return true
 
         val targetFuture: CompletableFuture<AccountIdentity?> = if (selector == null) {
-            val player = selfPlayer ?: return sendUsage(sender, "/ecolink ledger <player> [currency] [page]")
+            val player = selfPlayer ?: return sendUsage(sender, "ledger")
             CompletableFuture.completedFuture(AccountIdentity(player.uniqueId, player.name))
         } else {
             if (!sender.hasPermission("ecolink.ledger.others")) {
-                sender.sendMessage("&cYou do not have permission to view other ledgers.".colorize())
+                plugin.reply(sender, "messages.command.ledger.no-permission-others")
                 return true
             }
             resolveTarget(runtime, selector)
@@ -414,19 +449,25 @@ class EcoCommand(
         targetFuture.whenComplete { target, error ->
             complete(sender, runtime, error) {
                 if (target == null) {
-                    plugin.replyLater(sender, "&cAccount not found.")
+                    plugin.replyLater(sender, "messages.common.account-not-found")
                     return@complete
                 }
                 runtime.economyService.getLedger(target, page, currencyKey).whenComplete { entries, ledgerError ->
                     complete(sender, runtime, ledgerError) {
                         val currency = runtime.settings.requireCurrency(currencyKey)
-                        plugin.replyLater(sender, "&6Ledger &7${target.username} &7(${currency.displayName}, page $page)")
+                        plugin.replyLater(
+                            sender,
+                            "messages.command.ledger.header",
+                            ph("player", target.username),
+                            ph("currency", currency.displayName),
+                            ph("page", page)
+                        )
                         if (entries.isEmpty()) {
-                            plugin.replyLater(sender, "&7No ledger entries on this page.")
+                            plugin.replyLater(sender, "messages.command.ledger.empty")
                             return@complete
                         }
                         entries.forEach { entry ->
-                            plugin.replyLater(sender, formatLedgerLine(runtime, entry))
+                            sendLedgerLine(sender, runtime, entry)
                         }
                     }
                 }
@@ -436,29 +477,40 @@ class EcoCommand(
     }
 
     private fun handleCurrencies(sender: CommandSender, runtime: PluginRuntime): Boolean {
-        plugin.replyLater(sender, "&6Currencies")
+        plugin.reply(sender, "messages.command.currencies.header")
         runtime.settings.listCurrencies().forEach { currency ->
             val tags = buildList {
-                if (currency.key == runtime.settings.defaultCurrencyKey) add("default")
-                if (currency.vaultPrimary) add("vault")
-                if (!currency.transferable) add("no-pay")
+                if (currency.key == runtime.settings.defaultCurrencyKey) add(plugin.messages.raw("messages.command.currencies.tags.default"))
+                if (currency.vaultPrimary) add(plugin.messages.raw("messages.command.currencies.tags.vault"))
+                if (!currency.transferable) add(plugin.messages.raw("messages.command.currencies.tags.no-pay"))
             }
-            val suffix = if (tags.isEmpty()) "" else " &8[${tags.joinToString(", ")}]"
-            plugin.replyLater(
+            val tagBlock = if (tags.isEmpty()) "" else "[${tags.joinToString(", ")}]"
+            plugin.reply(
                 sender,
-                "&e${currency.key} &7(${currency.displayName}) &7start=&f${runtime.settings.format(currency.key, currency.startingBalance)}$suffix"
+                "messages.command.currencies.line",
+                ph("key", currency.key),
+                ph("display", currency.displayName),
+                ph("amount", runtime.settings.format(currency.key, currency.startingBalance)),
+                ph("tags", tagBlock)
             )
         }
         return true
     }
 
-    private fun formatLedgerLine(runtime: PluginRuntime, entry: LedgerEntry): String {
+    private fun sendLedgerLine(sender: CommandSender, runtime: PluginRuntime, entry: LedgerEntry) {
         val time = timeFormatter.format(entry.createdAt)
-        val reason = entry.reason?.takeIf { it.isNotBlank() } ?: "n/a"
-        val transaction = entry.idempotencyKey?.let { ", tx=$it" } ?: ""
-        return "&7[$time] &e${entry.action.name} &f${runtime.settings.format(entry.currencyKey, entry.amount)} " +
-            "&7-> &6${runtime.settings.format(entry.currencyKey, entry.balanceAfter)} " +
-            "&8(${entry.sourceServer}, $reason$transaction)"
+        val reason = entry.reason?.takeIf { it.isNotBlank() } ?: plugin.messages.raw("messages.labels.not-available")
+        plugin.replyLater(
+            sender,
+            "messages.command.ledger.line",
+            ph("time", time),
+            ph("action", entry.action.name),
+            ph("amount", runtime.settings.format(entry.currencyKey, entry.amount)),
+            ph("balance", runtime.settings.format(entry.currencyKey, entry.balanceAfter)),
+            ph("server", entry.sourceServer),
+            ph("reason", reason),
+            ph("transaction", entry.idempotencyKey ?: plugin.messages.raw("messages.labels.not-available"))
+        )
     }
 
     private fun resolveTarget(runtime: PluginRuntime, selector: String): CompletableFuture<AccountIdentity?> {
@@ -471,10 +523,10 @@ class EcoCommand(
     private fun requireReady(sender: CommandSender): PluginRuntime? {
         plugin.runtimeOrNull()?.let { return it }
         plugin.startupErrorOrNull()?.let {
-            sender.sendMessage("&cEcolink startup failed: ${it.message ?: it.javaClass.simpleName}".colorize())
+            plugin.reply(sender, "messages.system.startup-failed", ph("error", it.message ?: it.javaClass.simpleName))
             return null
         }
-        sender.sendMessage("&eEcolink is still booting, please retry in a moment.".colorize())
+        plugin.reply(sender, "messages.system.starting")
         return null
     }
 
@@ -501,12 +553,15 @@ class EcoCommand(
     ): BigDecimal? {
         val amount = runCatching { runtime.settings.normalize(currencyKey, BigDecimal(raw)) }.getOrNull()
         if (amount == null) {
-            sender.sendMessage("&cInvalid amount: &f$raw".colorize())
+            plugin.reply(sender, "messages.validation.invalid-amount", ph("input", raw))
             return null
         }
         val valid = if (allowZero) amount.signum() >= 0 else amount.signum() > 0
         if (!valid) {
-            sender.sendMessage("&cAmount must be ${if (allowZero) ">= 0" else "> 0"}.".colorize())
+            plugin.reply(
+                sender,
+                if (allowZero) "messages.validation.amount-non-negative" else "messages.validation.amount-positive"
+            )
             return null
         }
         return amount
@@ -523,7 +578,7 @@ class EcoCommand(
         }
         val currency = runtime.settings.findCurrency(raw)
         if (currency == null) {
-            sender.sendMessage("&cUnknown currency: &f$raw".colorize())
+            plugin.reply(sender, "messages.validation.unknown-currency", ph("currency", raw))
             return null
         }
         return currency.key
@@ -535,7 +590,7 @@ class EcoCommand(
         }
         val page = raw.toIntOrNull()
         if (page == null || page <= 0) {
-            sender.sendMessage("&cInvalid page: &f$raw".colorize())
+            plugin.reply(sender, "messages.validation.invalid-page", ph("input", raw))
             return null
         }
         return page
@@ -548,8 +603,8 @@ class EcoCommand(
         }
     }
 
-    private fun sendUsage(sender: CommandSender, usage: String): Boolean {
-        sender.sendMessage("&eUsage: &f$usage".colorize())
+    private fun sendUsage(sender: CommandSender, usageKey: String): Boolean {
+        plugin.reply(sender, "messages.common.usage", ph("usage", plugin.messages.raw("usage.$usageKey")))
         return true
     }
 
@@ -568,38 +623,40 @@ class EcoCommand(
             is InsufficientFundsException -> {
                 plugin.replyLater(
                     sender,
-                    "&cInsufficient funds. Balance: &f${runtime.settings.format(cause.currencyKey, cause.currentBalance)}"
+                    "messages.common.insufficient-funds",
+                    ph("amount", runtime.settings.format(cause.currencyKey, cause.currentBalance))
                 )
             }
 
             else -> {
                 plugin.logger.log(Level.SEVERE, "Ecolink command failed.", cause)
-                plugin.replyLater(sender, "&cOperation failed: ${cause.message ?: cause.javaClass.simpleName}")
+                plugin.replyLater(
+                    sender,
+                    "messages.common.operation-failed",
+                    ph("error", cause.message ?: cause.javaClass.simpleName)
+                )
             }
         }
     }
 
-    private fun helpLines(sender: CommandSender): List<String> {
-        val lines = mutableListOf(
-            "&6Ecolink Commands",
-            "&e/balance [player] [currency] &7- view balances",
-            "&e/pay <player> <amount> [currency] &7- transfer money",
-            "&e/baltop [currency] [page] &7- view richest accounts",
-            "&e/ecolink ledger [player] [currency] [page] &7- view transaction history",
-            "&e/ecolink currencies &7- list configured currencies"
-        )
+    private fun sendHelp(sender: CommandSender) {
+        plugin.reply(sender, "messages.help.header")
+        plugin.reply(sender, "messages.help.balance")
+        plugin.reply(sender, "messages.help.pay")
+        plugin.reply(sender, "messages.help.baltop")
+        plugin.reply(sender, "messages.help.ledger")
+        plugin.reply(sender, "messages.help.currencies")
         if (sender.hasPermission("ecolink.admin")) {
-            lines += "&e/ecolink set <player> <amount> [currency] &7- set balance"
-            lines += "&e/ecolink add <player> <amount> [currency] &7- add balance"
-            lines += "&e/ecolink take <player> <amount> [currency] &7- take balance"
+            plugin.reply(sender, "messages.help.admin-set")
+            plugin.reply(sender, "messages.help.admin-add")
+            plugin.reply(sender, "messages.help.admin-take")
         }
         if (sender.hasPermission("ecolink.recharge")) {
-            lines += "&e/ecolink recharge <player> <currency> <amount> <transactionId> [reason...] &7- idempotent recharge"
+            plugin.reply(sender, "messages.help.recharge")
         }
         if (sender.hasPermission("ecolink.migrate")) {
-            lines += "&e/ecolink migrate <cmi|essentials|all> [overwrite] &7- import old data"
+            plugin.reply(sender, "messages.help.migrate")
         }
-        return lines
     }
 
     private fun completePay(args: Array<out String>): MutableList<String> {
@@ -713,8 +770,12 @@ class EcoCommand(
     }
 }
 
-private enum class AdminMutation(val keyword: String) {
-    SET("set"),
-    ADD("add"),
-    TAKE("take")
+private enum class AdminMutation(
+    val keyword: String,
+    val usageKey: String,
+    val messageKey: String
+) {
+    SET("set", "admin-set", "messages.command.admin.set"),
+    ADD("add", "admin-add", "messages.command.admin.add"),
+    TAKE("take", "admin-take", "messages.command.admin.take")
 }

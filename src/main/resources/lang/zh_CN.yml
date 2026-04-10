@@ -1,0 +1,89 @@
+prefix: '<gradient:#4FC3F7:#7CFFCB><bold>Ecolink</bold></gradient><gray> • </gray>'
+
+usage:
+  root: '/ecolink <set|add|take|recharge|migrate|ledger|currencies|help>'
+  balance-other: '/balance <player> [currency]'
+  pay: '/pay <player> <amount> [currency]'
+  admin-set: '/ecolink set <player> <amount> [currency]'
+  admin-add: '/ecolink add <player> <amount> [currency]'
+  admin-take: '/ecolink take <player> <amount> [currency]'
+  recharge: '/ecolink recharge <player> <currency> <amount> <transactionId> [reason...]'
+  migrate: '/ecolink migrate <cmi|essentials|all> [overwrite]'
+  ledger: '/ecolink ledger <player> [currency] [page]'
+
+messages:
+  system:
+    startup-failed: '<prefix><#FF6B6B>插件启动失败：</#FF6B6B><white><error></white>'
+    starting: '<prefix><#FFD166>插件仍在启动中，请稍后重试。</#FFD166>'
+  common:
+    usage: '<prefix><#FFD166>用法：</#FFD166><white><usage></white>'
+    account-not-found: '<prefix><#FF6B6B>未找到该账户。</#FF6B6B>'
+    account-not-found-selector: '<prefix><#FF6B6B>未找到该账户：</#FF6B6B><white><selector></white>'
+    insufficient-funds: '<prefix><#FF6B6B>余额不足。</#FF6B6B><gray>当前余额：</gray><white><amount></white>'
+    operation-failed: '<prefix><#FF6B6B>操作失败：</#FF6B6B><white><error></white>'
+  validation:
+    invalid-amount: '<prefix><#FF6B6B>金额格式无效：</#FF6B6B><white><input></white>'
+    amount-positive: '<prefix><#FF6B6B>金额必须大于 0。</#FF6B6B>'
+    amount-non-negative: '<prefix><#FF6B6B>金额必须大于等于 0。</#FF6B6B>'
+    unknown-currency: '<prefix><#FF6B6B>未知货币：</#FF6B6B><white><currency></white>'
+    invalid-page: '<prefix><#FF6B6B>页码无效：</#FF6B6B><white><input></white>'
+  labels:
+    not-available: '无'
+  help:
+    header: '<prefix><gradient:#4FC3F7:#7CFFCB><bold>命令帮助</bold></gradient>'
+    balance: '<prefix><#7CFFCB>/balance [player] [currency]</#7CFFCB><gray> - 查看余额</gray>'
+    pay: '<prefix><#7CFFCB>/pay ＜player＞ ＜amount＞ [currency]</#7CFFCB><gray> - 玩家转账</gray>'
+    baltop: '<prefix><#7CFFCB>/baltop [currency] [page]</#7CFFCB><gray> - 查看排行榜</gray>'
+    ledger: '<prefix><#7CFFCB>/ecolink ledger [player] [currency] [page]</#7CFFCB><gray> - 查看流水</gray>'
+    currencies: '<prefix><#7CFFCB>/ecolink currencies</#7CFFCB><gray> - 列出货币</gray>'
+    admin-set: '<prefix><#FFD166>/ecolink set ＜player＞ ＜amount＞ [currency]</#FFD166><gray> - 设定余额</gray>'
+    admin-add: '<prefix><#FFD166>/ecolink add ＜player＞ ＜amount＞ [currency]</#FFD166><gray> - 增加余额</gray>'
+    admin-take: '<prefix><#FFD166>/ecolink take ＜player＞ ＜amount＞ [currency]</#FFD166><gray> - 扣减余额</gray>'
+    recharge: '<prefix><#FFD166>/ecolink recharge ＜player＞ ＜currency＞ ＜amount＞ ＜transactionId＞ [reason...]</#FFD166><gray> - 幂等充值</gray>'
+    migrate: '<prefix><#FFD166>/ecolink migrate ＜cmi|essentials|all＞ [overwrite]</#FFD166><gray> - 导入旧数据</gray>'
+  command:
+    balance:
+      no-permission-others: '<prefix><#FF6B6B>你没有权限查看其他玩家余额。</#FF6B6B>'
+      self: '<prefix><#7CFFCB>余额</#7CFFCB><gray>（<currency>）</gray><white><amount></white>'
+      other: '<prefix><white><player></white><gray>（<currency>）</gray><white><amount></white>'
+    pay:
+      no-permission: '<prefix><#FF6B6B>你没有权限进行转账。</#FF6B6B>'
+      currency-locked: '<prefix><#FF6B6B><currency> 当前不允许玩家互转。</#FF6B6B>'
+      self: '<prefix><#FF6B6B>不能给自己转账。</#FF6B6B>'
+      sent: '<prefix><#7CFFCB>已向</#7CFFCB><white><target></white><gray>转出</gray><white><amount></white><gray>（剩余 <balance>）</gray>'
+      received: '<prefix><#7CFFCB>收到</#7CFFCB><white><amount></white><gray>，来自</gray><white><player></white>'
+    baltop:
+      no-permission: '<prefix><#FF6B6B>你没有权限查看排行榜。</#FF6B6B>'
+      header: '<prefix><gradient:#4FC3F7:#7CFFCB><bold>余额排行</bold></gradient><gray><currency> · 第 <page> 页</gray>'
+      empty: '<prefix><gray>这一页还没有账户数据。</gray>'
+      line: '<prefix><#FFD166>#<rank></#FFD166><white><player></white><gray> - </gray><white><amount></white>'
+    admin:
+      no-permission: '<prefix><#FF6B6B>你没有管理权限。</#FF6B6B>'
+      set: '<prefix><#7CFFCB>已设置</#7CFFCB><white><player></white><gray>的新余额为</gray><white><amount></white>'
+      add: '<prefix><#7CFFCB>已为</#7CFFCB><white><player></white><gray>增加余额，当前为</gray><white><amount></white>'
+      take: '<prefix><#7CFFCB>已为</#7CFFCB><white><player></white><gray>扣减余额，当前为</gray><white><amount></white>'
+    recharge:
+      no-permission: '<prefix><#FF6B6B>你没有充值权限。</#FF6B6B>'
+      blank-transaction-id: '<prefix><#FF6B6B>事务号不能为空。</#FF6B6B>'
+      applied: '<prefix><#7CFFCB>充值已入账</#7CFFCB><gray>（事务 <transaction>）</gray><white><player></white><gray> → </gray><white><amount></white><gray>（余额 <balance>）</gray>'
+      duplicate: '<prefix><#FFD166>重复事务已安全回放</#FFD166><gray>（事务 <transaction>）</gray><white><player></white><gray> → </gray><white><amount></white><gray>（余额 <balance>）</gray>'
+    migrate:
+      no-permission: '<prefix><#FF6B6B>你没有迁移权限。</#FF6B6B>'
+      unknown-source: '<prefix><#FF6B6B>未知迁移来源：</#FF6B6B><white><source></white>'
+      started: '<prefix><#FFD166>迁移已在后台开始执行。</#FFD166>'
+      summary: '<prefix><#7CFFCB>迁移完成</#7CFFCB><white><source></white><gray>（发现 <discovered>，新增 <inserted>，覆盖 <updated>，跳过 <skipped>，失败 <failed>）</gray>'
+      report: '<prefix><white><source></white><gray>发现 <discovered>，新增 <inserted>，覆盖 <updated>，跳过 <skipped>，失败 <failed></gray>'
+      sample-error: '<prefix><#FF6B6B>样例错误：</#FF6B6B><white><error></white>'
+    ledger:
+      no-permission: '<prefix><#FF6B6B>你没有权限查看流水。</#FF6B6B>'
+      no-permission-others: '<prefix><#FF6B6B>你没有权限查看其他玩家流水。</#FF6B6B>'
+      header: '<prefix><gradient:#4FC3F7:#7CFFCB><bold>资金流水</bold></gradient><white><player></white><gray>（<currency> · 第 <page> 页）</gray>'
+      empty: '<prefix><gray>这一页没有流水记录。</gray>'
+      line: '<prefix><gray>[<time>]</gray><#FFD166><action></#FFD166><white><amount></white><gray> → </gray><white><balance></white><dark_gray>（<server>，<reason>，事务 <transaction>）</dark_gray>'
+    currencies:
+      header: '<prefix><gradient:#4FC3F7:#7CFFCB><bold>货币列表</bold></gradient>'
+      line: '<prefix><#7CFFCB><key></#7CFFCB><gray>（<display>）</gray><gray>初始余额：</gray><white><amount></white><dark_gray><tags></dark_gray>'
+      tags:
+        default: '默认'
+        vault: 'Vault'
+        no-pay: '禁转'

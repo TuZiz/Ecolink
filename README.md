@@ -8,6 +8,7 @@ Current focus:
 - MySQL compatibility when you already run it
 - multi-currency balances with per-currency scale and transfer rules
 - idempotent recharge pipeline for webhooks, stores, and manual compensation
+- MiniMessage-based localization with configurable zh/en language packs
 - CMI and EssentialsX balance migration
 - optional Vault, PlaceholderAPI, and Redis balance sync bridges
 
@@ -18,6 +19,8 @@ Current focus:
 - Account identity is stored separately from currency balances, so one player can hold multiple currencies cleanly.
 - Legacy single-balance tables are migrated into the default currency automatically on startup.
 - Recharge requests are deduplicated by `transactionId`, so repeated callbacks only apply once.
+- Runtime messages are loaded into memory at startup, so command responses do not touch disk IO.
+- This plugin does not mutate inventories or item stacks, so the current feature set does not introduce item loss or duplication paths.
 
 ## Database Recommendation
 
@@ -70,6 +73,27 @@ Compatibility notes:
 - old commands still default to `currencies.default-key`
 - Vault exposes the currency marked with `vault-primary`, or the default currency if none is marked
 - PlaceholderAPI keeps `%ecolink_balance%` and `%ecolink_balance_formatted%`, and now also supports `%ecolink_balance_<currency>%` and `%ecolink_balance_formatted_<currency>%`
+
+## Localization
+
+Language settings live in `src/main/resources/config.yml`:
+
+- `language.locale`
+- `language.fallback-locale`
+- `language.directory`
+
+Bundled language files:
+
+- `lang/zh_CN.yml`
+- `lang/en_US.yml`
+
+Design notes:
+
+- all runtime prompts are resolved from language files
+- `prefix` is a dedicated top-level key
+- other messages reuse it through the `<prefix>` placeholder
+- rendering uses `MiniMessage`, so RGB hex colors are supported directly
+- dynamic values are injected as unparsed placeholders to avoid placeholder injection problems
 
 ## Idempotent Recharge
 
