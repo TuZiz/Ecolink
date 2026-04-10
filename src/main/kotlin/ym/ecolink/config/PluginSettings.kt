@@ -12,13 +12,17 @@ data class PluginSettings(
     val workerThreads: Int,
     val defaultCurrencyKey: String,
     val currencies: Map<String, CurrencyDefinition>,
+    val currencyCatalog: Map<String, CurrencyDefinition>,
+    val activeCurrencyKeys: Set<String>,
     val cacheTtlMillis: Long,
     val language: LanguageSettings,
     val feature: FeatureSettings,
     val compatibility: CompatibilitySettings,
     val redisSync: RedisSyncSettings,
     val storage: StorageSettings,
-    val migration: MigrationSettings
+    val migration: MigrationSettings,
+    val currencyManagement: CurrencyManagementSettings,
+    val shop: ShopSettings
 ) {
     val balanceScale: Int
         get() = defaultCurrency().scale
@@ -27,14 +31,14 @@ data class PluginSettings(
         get() = defaultCurrency().startingBalance
 
     val maxBalanceScale: Int
-        get() = currencies.values.maxOf { it.scale }
+        get() = currencyCatalog.values.maxOfOrNull { it.scale } ?: 2
 
     fun normalize(amount: BigDecimal): BigDecimal {
         return normalize(defaultCurrencyKey, amount)
     }
 
     fun normalize(currencyKey: String, amount: BigDecimal): BigDecimal {
-        val currency = requireCurrency(currencyKey)
+        val currency = requireCatalogCurrency(currencyKey)
         return amount.setScale(currency.scale, RoundingMode.HALF_UP)
     }
 
@@ -43,7 +47,7 @@ data class PluginSettings(
     }
 
     fun format(currencyKey: String, amount: BigDecimal): String {
-        val currency = requireCurrency(currencyKey)
+        val currency = requireCatalogCurrency(currencyKey)
         return "${currency.symbol}${normalize(currency.key, amount).toPlainString()}"
     }
 
@@ -51,7 +55,7 @@ data class PluginSettings(
 
     fun requireCurrency(currencyKey: String): CurrencyDefinition {
         return currencies[currencyKey.lowercase()]
-            ?: error("Unknown currency: $currencyKey")
+            ?: error("Unknown or disabled currency: $currencyKey")
     }
 
     fun findCurrency(currencyKey: String?): CurrencyDefinition? {
@@ -59,6 +63,22 @@ data class PluginSettings(
             return defaultCurrency()
         }
         return currencies[currencyKey.lowercase()]
+    }
+
+    fun requireCatalogCurrency(currencyKey: String): CurrencyDefinition {
+        return currencyCatalog[currencyKey.lowercase()]
+            ?: error("Unknown configured currency: $currencyKey")
+    }
+
+    fun findCatalogCurrency(currencyKey: String?): CurrencyDefinition? {
+        if (currencyKey.isNullOrBlank()) {
+            return null
+        }
+        return currencyCatalog[currencyKey.lowercase()]
+    }
+
+    fun isCurrencyEnabled(currencyKey: String): Boolean {
+        return activeCurrencyKeys.contains(currencyKey.lowercase())
     }
 
     fun vaultCurrency(): CurrencyDefinition {
@@ -69,13 +89,23 @@ data class PluginSettings(
         return currencies.values.sortedBy { it.key }
     }
 
+    fun listCatalogCurrencies(): List<CurrencyDefinition> {
+        return currencyCatalog.values.sortedBy { it.key }
+    }
+
+    fun listDisabledCurrencies(): List<CurrencyDefinition> {
+        return listCatalogCurrencies().filterNot { isCurrencyEnabled(it.key) }
+    }
+
     companion object {
         fun load(config: FileConfiguration): PluginSettings {
             val legacyScale = max(0, config.getInt("economy.scale", 2))
             val legacyStartingBalance = BigDecimal(config.getString("economy.starting-balance", "0.00") ?: "0.00")
-            val currencies = loadCurrencies(config, legacyScale, legacyStartingBalance)
+            val catalog = loadCurrencies(config, legacyScale, legacyStartingBalance)
+            val activeKeys = loadActiveCurrencyKeys(config, catalog)
+            val currencies = activeKeys.associateWith { catalog.getValue(it) }
             val defaultKey = (config.getString("currencies.default-key") ?: currencies.values.first().key).lowercase()
-            require(currencies.containsKey(defaultKey)) { "Default currency '$defaultKey' is not defined." }
+            require(currencies.containsKey(defaultKey)) { "Default currency '$defaultKey' is not enabled." }
 
             val type = DatabaseType.from(config.getString("storage.type"))
             return PluginSettings(
@@ -83,6 +113,8 @@ data class PluginSettings(
                 workerThreads = max(2, config.getInt("async.worker-threads", 4)),
                 defaultCurrencyKey = defaultKey,
                 currencies = currencies,
+                currencyCatalog = catalog,
+                activeCurrencyKeys = activeKeys,
                 cacheTtlMillis = config.getLong("economy.cache-ttl-millis", 2_000L).coerceAtLeast(0L),
                 language = LanguageSettings(
                     locale = config.getString("language.locale", "zh_CN") ?: "zh_CN",
@@ -131,7 +163,17 @@ data class PluginSettings(
                     cmiDataFolder = config.getString("migration.cmi-directory", "plugins/CMI") ?: "plugins/CMI",
                     essentialsDataFolder = config.getString("migration.essentials-directory", "plugins/Essentials")
                         ?: "plugins/Essentials"
-                )
+                ),
+                currencyManagement = CurrencyManagementSettings(
+                    commandEnabled = config.getBoolean("currencies.management.command-enabled", true),
+                    allowCreate = config.getBoolean("currencies.management.allow-create", true),
+                    allowDelete = config.getBoolean("currencies.management.allow-delete", true),
+                    protectedKeys = config.getStringList("currencies.management.protected")
+                        .map { it.lowercase() }
+                        .filter { catalog.containsKey(it) }
+                        .toSet()
+                ),
+                shop = loadShop(config, catalog)
             )
         }
 
@@ -163,6 +205,19 @@ data class PluginSettings(
             }
         }
 
+        private fun loadActiveCurrencyKeys(
+            config: FileConfiguration,
+            catalog: Map<String, CurrencyDefinition>
+        ): Set<String> {
+            val configured = config.getStringList("currencies.enabled")
+                .map { it.lowercase() }
+                .filter { catalog.containsKey(it) }
+                .toSet()
+            val keys = if (configured.isEmpty()) catalog.keys else configured
+            require(keys.isNotEmpty()) { "At least one currency must be enabled." }
+            return keys
+        }
+
         private fun loadCurrency(
             key: String,
             section: ConfigurationSection,
@@ -182,6 +237,51 @@ data class PluginSettings(
                 startingBalance = starting,
                 transferable = section.getBoolean("transferable", true),
                 vaultPrimary = section.getBoolean("vault-primary", false)
+            )
+        }
+
+        private fun loadShop(
+            config: FileConfiguration,
+            catalog: Map<String, CurrencyDefinition>
+        ): ShopSettings {
+            val section = config.getConfigurationSection("shop.products")
+            if (section == null || section.getKeys(false).isEmpty()) {
+                return ShopSettings(
+                    enabled = config.getBoolean("shop.enabled", false),
+                    products = emptyMap()
+                )
+            }
+            val products = section.getKeys(false)
+                .mapNotNull { rawKey ->
+                    val productSection = section.getConfigurationSection(rawKey) ?: return@mapNotNull null
+                    if (!productSection.getBoolean("enabled", true)) {
+                        return@mapNotNull null
+                    }
+                    val currencyKey = (productSection.getString("currency") ?: config.getString("currencies.default-key") ?: "coins")
+                        .lowercase()
+                    require(catalog.containsKey(currencyKey)) {
+                        "Shop product '$rawKey' references undefined currency '$currencyKey'."
+                    }
+                    val price = BigDecimal(productSection.getString("price", "0") ?: "0")
+                        .setScale(catalog.getValue(currencyKey).scale, RoundingMode.HALF_UP)
+                    require(price.signum() > 0) { "Shop product '$rawKey' price must be greater than 0." }
+                    val commands = productSection.getStringList("commands")
+                        .map(String::trim)
+                        .filter(String::isNotEmpty)
+                    require(commands.isNotEmpty()) { "Shop product '$rawKey' must define at least one command." }
+                    ShopProductDefinition(
+                        key = rawKey.lowercase(),
+                        displayName = productSection.getString("display-name", rawKey) ?: rawKey,
+                        currencyKey = currencyKey,
+                        price = price,
+                        commands = commands
+                    )
+                }
+                .associateBy { it.key }
+
+            return ShopSettings(
+                enabled = config.getBoolean("shop.enabled", true),
+                products = products
             )
         }
 
@@ -257,4 +357,40 @@ data class RedisSyncSettings(
     val password: String,
     val channel: String,
     val timeoutMillis: Long
+)
+
+data class CurrencyManagementSettings(
+    val commandEnabled: Boolean,
+    val allowCreate: Boolean,
+    val allowDelete: Boolean,
+    val protectedKeys: Set<String>
+) {
+    fun isProtected(currencyKey: String, defaultCurrencyKey: String): Boolean {
+        val normalized = currencyKey.lowercase()
+        return normalized == defaultCurrencyKey.lowercase() || protectedKeys.contains(normalized)
+    }
+}
+
+data class ShopSettings(
+    val enabled: Boolean,
+    val products: Map<String, ShopProductDefinition>
+) {
+    fun findProduct(productKey: String?): ShopProductDefinition? {
+        if (productKey.isNullOrBlank()) {
+            return null
+        }
+        return products[productKey.lowercase()]
+    }
+
+    fun listProducts(): List<ShopProductDefinition> {
+        return products.values.sortedBy { it.key }
+    }
+}
+
+data class ShopProductDefinition(
+    val key: String,
+    val displayName: String,
+    val currencyKey: String,
+    val price: BigDecimal,
+    val commands: List<String>
 )

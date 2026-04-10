@@ -241,6 +241,15 @@ class EconomyService(
         return resolveIdentity(selector).get(settings.compatibility.vault.syncTimeoutMillis, TimeUnit.MILLISECONDS)
     }
 
+    fun deleteCurrencyData(currencyKey: String): CompletableFuture<CurrencyDeletionSummary> {
+        return dispatcher.supplyAsync {
+            val normalizedCurrency = settings.requireCurrency(currencyKey).key
+            val summary = repository.deleteCurrencyData(normalizedCurrency)
+            clearCurrencyCache(normalizedCurrency)
+            summary
+        }
+    }
+
     private fun mutateBalance(
         target: AccountIdentity,
         currencyKey: String,
@@ -299,6 +308,10 @@ class EconomyService(
 
     private fun requireCurrency(currencyKey: String): String {
         return settings.requireCurrency(currencyKey).key
+    }
+
+    private fun clearCurrencyCache(currencyKey: String) {
+        cache.entries.removeIf { it.key.currencyKey == currencyKey }
     }
 
     private fun parseUuid(raw: String): UUID? {

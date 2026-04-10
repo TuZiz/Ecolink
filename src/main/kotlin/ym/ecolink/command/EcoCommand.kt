@@ -14,6 +14,11 @@ import ym.ecolink.economy.LedgerEntry
 import ym.ecolink.economy.RechargeReceipt
 import ym.ecolink.i18n.ph
 import ym.ecolink.migration.MigrationKind
+import ym.ecolink.shop.ShopBusyException
+import ym.ecolink.shop.ShopDisabledException
+import ym.ecolink.shop.ShopDispatchException
+import ym.ecolink.shop.ShopProductCurrencyDisabledException
+import ym.ecolink.shop.UnknownShopProductException
 import java.math.BigDecimal
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -34,8 +39,9 @@ class EcoCommand(
         args: Array<out String>
     ): Boolean {
         return when (command.name.lowercase()) {
+            "money" -> handleMoney(sender, args)
             "balance" -> handleBalance(sender, args)
-            "pay" -> handlePay(sender, args)
+            "pay" -> handleStandalonePay(sender, args)
             "baltop" -> handleBaltop(sender, args)
             else -> handleRoot(sender, args)
         }
@@ -48,41 +54,364 @@ class EcoCommand(
         args: Array<out String>
     ): MutableList<String> {
         return when (command.name.lowercase()) {
-            "pay" -> completePay(args)
+            "money" -> completeMoney(args, sender)
+            "pay" -> completeStandalonePay(args)
             "balance" -> completeBalance(sender, args)
             "baltop" -> completeBaltop(args)
             else -> completeRoot(sender, args)
         }
     }
 
-    private fun handleBalance(sender: CommandSender, args: Array<out String>): Boolean {
-        val runtime = requireReady(sender) ?: return true
-        val selfPlayer = sender as? Player
-
+    private fun handleRoot(sender: CommandSender, args: Array<out String>): Boolean {
         if (args.isEmpty()) {
-            val player = selfPlayer ?: return sendUsage(sender, "balance-other")
-            return queryBalance(sender, runtime, AccountIdentity(player.uniqueId, player.name), runtime.settings.defaultCurrencyKey, selfView = true)
+            sendHelp(sender)
+            return true
         }
 
-        if (selfPlayer != null && args.size == 1) {
-            runtime.settings.findCurrency(args[0])?.let { currency ->
-                return queryBalance(sender, runtime, AccountIdentity(selfPlayer.uniqueId, selfPlayer.name), currency.key, selfView = true)
+        val keyword = args[0].lowercase()
+        if (keyword == "reload") {
+            return handleReload(sender)
+        }
+
+        val runtime = requireReady(sender) ?: return true
+        return when (keyword) {
+            "me" -> handleMe(sender, runtime)
+            "buy" -> handleBuy(sender, runtime, args)
+            "top" -> handleRootTop(sender, runtime, args)
+            "pay" -> handleRootPay(sender, runtime, args)
+            "create" -> handleCreateCurrency(sender, runtime, args)
+            "give" -> handleGive(sender, runtime, args)
+            "reset" -> handleReset(sender, runtime, args)
+            "delete" -> handleDeleteCurrency(sender, runtime, args)
+            "set" -> handleAdminMutation(sender, runtime, args, AdminMutation.SET)
+            "add" -> handleAdminMutation(sender, runtime, args, AdminMutation.ADD)
+            "take" -> handleAdminMutation(sender, runtime, args, AdminMutation.TAKE)
+            "recharge" -> handleRecharge(sender, runtime, args)
+            "migrate" -> handleMigration(sender, runtime, args)
+            "ledger" -> handleLedger(sender, runtime, args)
+            "currencies" -> handleCurrencies(sender, runtime)
+            "help" -> {
+                sendHelp(sender)
+                true
+            }
+
+            else -> sendUsage(sender, "root")
+        }
+    }
+
+    private fun handleMe(sender: CommandSender, runtime: PluginRuntime): Boolean {
+        val player = sender as? Player ?: return sendPlayerOnly(sender)
+        val identity = AccountIdentity(player.uniqueId, player.name)
+        val futures = runtime.settings.listCurrencies().associate { currency ->
+            currency.key to runtime.economyService.getBalance(identity, currency.key)
+        }
+        CompletableFuture.allOf(*futures.values.toTypedArray()).whenComplete { _, error ->
+            complete(sender, runtime, error) {
+                plugin.replyLater(sender, "messages.command.me.header", ph("player", player.name))
+                runtime.settings.listCurrencies().forEach { currency ->
+                    val record = futures.getValue(currency.key).join()
+                    plugin.replyLater(
+                        sender,
+                        "messages.command.me.line",
+                        ph("currency", currency.displayName),
+                        ph("amount", runtime.settings.format(currency.key, record.balance))
+                    )
+                }
             }
         }
+        return true
+    }
 
+    private fun handleBuy(sender: CommandSender, runtime: PluginRuntime, args: Array<out String>): Boolean {
+        val player = sender as? Player ?: return sendPlayerOnly(sender)
+        if (args.size < 2) {
+            return sendUsage(sender, "buy")
+        }
+        runtime.shopService.purchase(player, args[1]).whenComplete { receipt, error ->
+            complete(sender, runtime, error) {
+                val currency = runtime.settings.requireCatalogCurrency(receipt.currencyKey)
+                plugin.replyLater(
+                    sender,
+                    "messages.command.buy.success",
+                    ph("product", receipt.product.displayName),
+                    ph("currency", currency.displayName),
+                    ph("amount", runtime.settings.format(receipt.currencyKey, receipt.amount)),
+                    ph("balance", runtime.settings.format(receipt.currencyKey, receipt.remainingBalance))
+                )
+            }
+        }
+        return true
+    }
+
+    private fun handleRootTop(sender: CommandSender, runtime: PluginRuntime, args: Array<out String>): Boolean {
+        if (args.size < 2) {
+            return sendUsage(sender, "top")
+        }
+        val currencyKey = parseCurrency(runtime, sender, args[1], null) ?: return true
+        val page = parsePage(sender, args.getOrNull(2)) ?: return true
+        return showTop(sender, runtime, currencyKey, page)
+    }
+
+    private fun handleRootPay(sender: CommandSender, runtime: PluginRuntime, args: Array<out String>): Boolean {
+        val player = sender as? Player ?: return sendPlayerOnly(sender)
+        if (!player.hasPermission("ecolink.pay")) {
+            plugin.reply(sender, "messages.command.pay.no-permission")
+            return true
+        }
+        if (args.size < 4) {
+            return sendUsage(sender, "pay-root")
+        }
+        val currencyKey = parseCurrency(runtime, sender, args[2], null) ?: return true
+        val amount = parsePositiveAmount(runtime, sender, args[3], currencyKey) ?: return true
+        return executePay(sender, runtime, player, args[1], currencyKey, amount)
+    }
+
+    private fun handleCreateCurrency(sender: CommandSender, runtime: PluginRuntime, args: Array<out String>): Boolean {
+        if (!sender.hasPermission("ecolink.admin")) {
+            plugin.reply(sender, "messages.command.admin.no-permission")
+            return true
+        }
+        if (!runtime.settings.currencyManagement.commandEnabled || !runtime.settings.currencyManagement.allowCreate) {
+            plugin.reply(sender, "messages.command.currency.disabled")
+            return true
+        }
+        if (args.size < 2) {
+            return sendUsage(sender, "create")
+        }
+        val currency = runtime.settings.findCatalogCurrency(args[1]) ?: run {
+            plugin.reply(sender, "messages.command.currency.not-configured", ph("currency", args[1]))
+            return true
+        }
+        if (runtime.settings.isCurrencyEnabled(currency.key)) {
+            plugin.reply(sender, "messages.command.currency.already-enabled", ph("currency", currency.displayName))
+            return true
+        }
+        plugin.updateEnabledCurrencies(runtime.settings.activeCurrencyKeys + currency.key).whenComplete { _, error ->
+            if (error != null) {
+                plugin.replyLater(
+                    sender,
+                    "messages.common.operation-failed",
+                    ph("error", unwrap(error).message ?: unwrap(error).javaClass.simpleName)
+                )
+                return@whenComplete
+            }
+            plugin.replyLater(sender, "messages.command.currency.created", ph("currency", currency.displayName))
+        }
+        return true
+    }
+
+    private fun handleGive(sender: CommandSender, runtime: PluginRuntime, args: Array<out String>): Boolean {
+        if (!sender.hasPermission("ecolink.admin")) {
+            plugin.reply(sender, "messages.command.admin.no-permission")
+            return true
+        }
+        if (args.size < 4) {
+            return sendUsage(sender, "give")
+        }
+        val currencyKey = parseCurrency(runtime, sender, args[2], null) ?: return true
+        val amount = parsePositiveAmount(runtime, sender, args[3], currencyKey) ?: return true
+        resolveTarget(runtime, args[1]).whenComplete { target, error ->
+            complete(sender, runtime, error) {
+                if (target == null) {
+                    plugin.replyLater(sender, "messages.common.account-not-found-selector", ph("selector", args[1]))
+                    return@complete
+                }
+                runtime.economyService.addBalance(target, currencyKey, amount, sender.name, "admin-give")
+                    .whenComplete { record, mutationError ->
+                        complete(sender, runtime, mutationError) {
+                            plugin.replyLater(
+                                sender,
+                                "messages.command.admin.give",
+                                ph("player", record.username),
+                                ph("currency", runtime.settings.requireCurrency(currencyKey).displayName),
+                                ph("amount", runtime.settings.format(currencyKey, record.balance))
+                            )
+                        }
+                    }
+            }
+        }
+        return true
+    }
+
+    private fun handleReset(sender: CommandSender, runtime: PluginRuntime, args: Array<out String>): Boolean {
+        if (!sender.hasPermission("ecolink.admin")) {
+            plugin.reply(sender, "messages.command.admin.no-permission")
+            return true
+        }
+        if (args.size < 3) {
+            return sendUsage(sender, "reset")
+        }
+        val currency = runtime.settings.findCurrency(args[2]) ?: run {
+            plugin.reply(sender, "messages.validation.unknown-currency", ph("currency", args[2]))
+            return true
+        }
+        resolveTarget(runtime, args[1]).whenComplete { target, error ->
+            complete(sender, runtime, error) {
+                if (target == null) {
+                    plugin.replyLater(sender, "messages.common.account-not-found-selector", ph("selector", args[1]))
+                    return@complete
+                }
+                runtime.economyService.setBalance(
+                    target = target,
+                    currencyKey = currency.key,
+                    amount = currency.startingBalance,
+                    actor = sender.name,
+                    reason = "admin-reset"
+                ).whenComplete { record, resetError ->
+                    complete(sender, runtime, resetError) {
+                        plugin.replyLater(
+                            sender,
+                            "messages.command.admin.reset",
+                            ph("player", record.username),
+                            ph("currency", currency.displayName),
+                            ph("amount", runtime.settings.format(currency.key, record.balance))
+                        )
+                    }
+                }
+            }
+        }
+        return true
+    }
+
+    private fun handleDeleteCurrency(sender: CommandSender, runtime: PluginRuntime, args: Array<out String>): Boolean {
+        if (!sender.hasPermission("ecolink.admin")) {
+            plugin.reply(sender, "messages.command.admin.no-permission")
+            return true
+        }
+        if (!runtime.settings.currencyManagement.commandEnabled || !runtime.settings.currencyManagement.allowDelete) {
+            plugin.reply(sender, "messages.command.currency.disabled")
+            return true
+        }
+        if (args.size < 2) {
+            return sendUsage(sender, "delete")
+        }
+        val currency = runtime.settings.findCurrency(args[1]) ?: run {
+            plugin.reply(sender, "messages.validation.unknown-currency", ph("currency", args[1]))
+            return true
+        }
+        if (runtime.settings.currencyManagement.isProtected(currency.key, runtime.settings.defaultCurrencyKey)) {
+            plugin.reply(sender, "messages.command.currency.protected", ph("currency", currency.displayName))
+            return true
+        }
+        runtime.economyService.deleteCurrencyData(currency.key)
+            .thenCompose { summary ->
+                plugin.updateEnabledCurrencies(runtime.settings.activeCurrencyKeys - currency.key)
+                    .thenApply { summary }
+            }.whenComplete { summary, error ->
+                if (error != null) {
+                    plugin.replyLater(
+                        sender,
+                        "messages.common.operation-failed",
+                        ph("error", unwrap(error).message ?: unwrap(error).javaClass.simpleName)
+                    )
+                    return@whenComplete
+                }
+                plugin.replyLater(
+                    sender,
+                    "messages.command.currency.deleted",
+                    ph("currency", currency.displayName),
+                    ph("balances", summary.balancesDeleted),
+                    ph("ledger", summary.ledgerDeleted),
+                    ph("recharges", summary.rechargesDeleted)
+                )
+            }
+        return true
+    }
+
+    private fun handleReload(sender: CommandSender): Boolean {
+        if (!sender.hasPermission("ecolink.admin")) {
+            plugin.reply(sender, "messages.command.admin.no-permission")
+            return true
+        }
+        plugin.reply(sender, "messages.command.reload.started")
+        plugin.reloadRuntime().whenComplete { _, error ->
+            if (error != null) {
+                plugin.replyLater(
+                    sender,
+                    "messages.common.operation-failed",
+                    ph("error", unwrap(error).message ?: unwrap(error).javaClass.simpleName)
+                )
+                return@whenComplete
+            }
+            plugin.replyLater(sender, "messages.command.reload.success")
+        }
+        return true
+    }
+
+    private fun handleMoney(sender: CommandSender, args: Array<out String>): Boolean {
+        val runtime = requireReady(sender) ?: return true
+        val vaultCurrency = runtime.settings.vaultCurrency()
+        if (args.isEmpty()) {
+            val player = sender as? Player ?: return sendUsage(sender, "money-root")
+            return queryBalance(
+                sender,
+                runtime,
+                AccountIdentity(player.uniqueId, player.name),
+                vaultCurrency.key,
+                selfView = true
+            )
+        }
+
+        return when (args[0].lowercase()) {
+            "pay" -> {
+                val player = sender as? Player ?: return sendPlayerOnly(sender)
+                if (!player.hasPermission("ecolink.pay")) {
+                    plugin.reply(sender, "messages.command.pay.no-permission")
+                    return true
+                }
+                if (args.size < 3) {
+                    return sendUsage(sender, "money-root")
+                }
+                val amount = parsePositiveAmount(runtime, sender, args[2], vaultCurrency.key) ?: return true
+                executePay(sender, runtime, player, args[1], vaultCurrency.key, amount)
+            }
+
+            "top" -> {
+                val page = parsePage(sender, args.getOrNull(1)) ?: return true
+                showTop(sender, runtime, vaultCurrency.key, page)
+            }
+
+            "help" -> sendUsage(sender, "money-root")
+            else -> {
+                if (!sender.hasPermission("ecolink.balance.others")) {
+                    plugin.reply(sender, "messages.command.balance.no-permission-others")
+                    return true
+                }
+                resolveTarget(runtime, args[0]).whenComplete { target, error ->
+                    complete(sender, runtime, error) {
+                        if (target == null) {
+                            plugin.replyLater(sender, "messages.common.account-not-found-selector", ph("selector", args[0]))
+                            return@complete
+                        }
+                        queryBalance(sender, runtime, target, vaultCurrency.key, selfView = false)
+                    }
+                }
+                true
+            }
+        }
+    }
+
+    private fun handleBalance(sender: CommandSender, args: Array<out String>): Boolean {
+        val runtime = requireReady(sender) ?: return true
+        val vaultCurrency = runtime.settings.vaultCurrency()
+        if (args.isEmpty()) {
+            val player = sender as? Player ?: return sendUsage(sender, "balance-other")
+            return queryBalance(sender, runtime, AccountIdentity(player.uniqueId, player.name), vaultCurrency.key, selfView = true)
+        }
+        if (args.size > 1) {
+            return sendUsage(sender, "balance-other")
+        }
         if (!sender.hasPermission("ecolink.balance.others")) {
             plugin.reply(sender, "messages.command.balance.no-permission-others")
             return true
         }
-
-        val currencyKey = parseCurrency(runtime, sender, args.getOrNull(1), runtime.settings.defaultCurrencyKey) ?: return true
         resolveTarget(runtime, args[0]).whenComplete { target, error ->
             complete(sender, runtime, error) {
                 if (target == null) {
                     plugin.replyLater(sender, "messages.common.account-not-found-selector", ph("selector", args[0]))
                     return@complete
                 }
-                queryBalance(sender, runtime, target, currencyKey, selfView = false)
+                queryBalance(sender, runtime, target, vaultCurrency.key, selfView = false)
             }
         }
         return true
@@ -115,9 +444,9 @@ class EcoCommand(
         return true
     }
 
-    private fun handlePay(sender: CommandSender, args: Array<out String>): Boolean {
+    private fun handleStandalonePay(sender: CommandSender, args: Array<out String>): Boolean {
         val runtime = requireReady(sender) ?: return true
-        val player = sender as? Player ?: return sendUsage(sender, "pay")
+        val player = sender as? Player ?: return sendPlayerOnly(sender)
         if (!player.hasPermission("ecolink.pay")) {
             plugin.reply(sender, "messages.command.pay.no-permission")
             return true
@@ -125,20 +454,33 @@ class EcoCommand(
         if (args.size < 2) {
             return sendUsage(sender, "pay")
         }
+        if (args.size > 2) {
+            return sendUsage(sender, "pay")
+        }
+        val vaultCurrency = runtime.settings.vaultCurrency()
+        val amount = parsePositiveAmount(runtime, sender, args[1], vaultCurrency.key) ?: return true
+        return executePay(sender, runtime, player, args[0], vaultCurrency.key, amount)
+    }
 
-        val currencyKey = parseCurrency(runtime, sender, args.getOrNull(2), runtime.settings.defaultCurrencyKey) ?: return true
+    private fun executePay(
+        sender: CommandSender,
+        runtime: PluginRuntime,
+        player: Player,
+        targetSelector: String,
+        currencyKey: String,
+        amount: BigDecimal
+    ): Boolean {
         val currency = runtime.settings.requireCurrency(currencyKey)
         if (!currency.transferable) {
             plugin.reply(sender, "messages.command.pay.currency-locked", ph("currency", currency.displayName))
             return true
         }
-        val amount = parsePositiveAmount(runtime, sender, args[1], currency.key) ?: return true
         val source = AccountIdentity(player.uniqueId, player.name)
 
-        resolveTarget(runtime, args[0]).whenComplete { target, error ->
+        resolveTarget(runtime, targetSelector).whenComplete { target, error ->
             complete(sender, runtime, error) {
                 if (target == null) {
-                    plugin.replyLater(sender, "messages.common.account-not-found-selector", ph("selector", args[0]))
+                    plugin.replyLater(sender, "messages.common.account-not-found-selector", ph("selector", targetSelector))
                     return@complete
                 }
                 if (target.uuid == source.uuid) {
@@ -158,6 +500,7 @@ class EcoCommand(
                             sender,
                             "messages.command.pay.sent",
                             ph("target", receipt.to.username),
+                            ph("currency", currency.displayName),
                             ph("amount", runtime.settings.format(currency.key, amount)),
                             ph("balance", runtime.settings.format(currency.key, receipt.from.balance))
                         )
@@ -165,6 +508,7 @@ class EcoCommand(
                             plugin.replyLater(
                                 targetPlayer,
                                 "messages.command.pay.received",
+                                ph("currency", currency.displayName),
                                 ph("amount", runtime.settings.format(currency.key, amount)),
                                 ph("player", player.name)
                             )
@@ -178,20 +522,11 @@ class EcoCommand(
 
     private fun handleBaltop(sender: CommandSender, args: Array<out String>): Boolean {
         val runtime = requireReady(sender) ?: return true
-        if (!sender.hasPermission("ecolink.baltop")) {
-            plugin.reply(sender, "messages.command.baltop.no-permission")
-            return true
-        }
-        val first = args.getOrNull(0)
-        val second = args.getOrNull(1)
-        val currencyKey = if (first != null && first.toIntOrNull() == null) {
-            parseCurrency(runtime, sender, first, runtime.settings.defaultCurrencyKey) ?: return true
-        } else {
-            runtime.settings.defaultCurrencyKey
-        }
-        val pageRaw = if (first != null && first.toIntOrNull() != null) first else second
-        val page = parsePage(sender, pageRaw) ?: return true
+        val page = parsePage(sender, args.getOrNull(0)) ?: return true
+        return showTop(sender, runtime, runtime.settings.vaultCurrency().key, page)
+    }
 
+    private fun showTop(sender: CommandSender, runtime: PluginRuntime, currencyKey: String, page: Int): Boolean {
         runtime.economyService.getTopBalances(page, currencyKey).whenComplete { records, error ->
             complete(sender, runtime, error) {
                 val currency = runtime.settings.requireCurrency(currencyKey)
@@ -218,30 +553,6 @@ class EcoCommand(
             }
         }
         return true
-    }
-
-    private fun handleRoot(sender: CommandSender, args: Array<out String>): Boolean {
-        if (args.isEmpty()) {
-            sendHelp(sender)
-            return true
-        }
-
-        val runtime = requireReady(sender) ?: return true
-        return when (args[0].lowercase()) {
-            "set" -> handleAdminMutation(sender, runtime, args, AdminMutation.SET)
-            "add" -> handleAdminMutation(sender, runtime, args, AdminMutation.ADD)
-            "take" -> handleAdminMutation(sender, runtime, args, AdminMutation.TAKE)
-            "recharge" -> handleRecharge(sender, runtime, args)
-            "migrate" -> handleMigration(sender, runtime, args)
-            "ledger" -> handleLedger(sender, runtime, args)
-            "currencies" -> handleCurrencies(sender, runtime)
-            "help" -> {
-                sendHelp(sender)
-                true
-            }
-
-            else -> sendUsage(sender, "root")
-        }
     }
 
     private fun handleAdminMutation(
@@ -281,6 +592,7 @@ class EcoCommand(
                             sender,
                             mutation.messageKey,
                             ph("player", record.username),
+                            ph("currency", runtime.settings.requireCurrency(currencyKey).displayName),
                             ph("amount", runtime.settings.format(currencyKey, record.balance))
                         )
                     }
@@ -342,6 +654,7 @@ class EcoCommand(
             path,
             ph("transaction", receipt.transactionId),
             ph("player", receipt.record.username),
+            ph("currency", runtime.settings.requireCatalogCurrency(receipt.record.currencyKey).displayName),
             ph("amount", runtime.settings.format(receipt.record.currencyKey, receipt.amount)),
             ph("balance", runtime.settings.format(receipt.record.currencyKey, receipt.record.balance))
         )
@@ -477,6 +790,10 @@ class EcoCommand(
     }
 
     private fun handleCurrencies(sender: CommandSender, runtime: PluginRuntime): Boolean {
+        if (!sender.hasPermission("ecolink.admin")) {
+            plugin.reply(sender, "messages.command.admin.no-permission")
+            return true
+        }
         plugin.reply(sender, "messages.command.currencies.header")
         runtime.settings.listCurrencies().forEach { currency ->
             val tags = buildList {
@@ -608,6 +925,11 @@ class EcoCommand(
         return true
     }
 
+    private fun sendPlayerOnly(sender: CommandSender): Boolean {
+        plugin.reply(sender, "messages.common.player-only")
+        return true
+    }
+
     private fun complete(
         sender: CommandSender,
         runtime: PluginRuntime,
@@ -628,6 +950,15 @@ class EcoCommand(
                 )
             }
 
+            is ShopDisabledException -> plugin.replyLater(sender, "messages.command.buy.disabled")
+            is UnknownShopProductException -> plugin.replyLater(sender, "messages.command.buy.unknown-product", ph("product", cause.productKey))
+            is ShopProductCurrencyDisabledException -> plugin.replyLater(sender, "messages.command.buy.currency-disabled", ph("currency", cause.currencyKey))
+            is ShopBusyException -> plugin.replyLater(sender, "messages.command.buy.in-progress")
+            is ShopDispatchException -> {
+                plugin.logger.log(Level.SEVERE, "Ecolink shop dispatch failed.", cause)
+                plugin.replyLater(sender, "messages.command.buy.delivery-failed")
+            }
+
             else -> {
                 plugin.logger.log(Level.SEVERE, "Ecolink command failed.", cause)
                 plugin.replyLater(
@@ -641,60 +972,65 @@ class EcoCommand(
 
     private fun sendHelp(sender: CommandSender) {
         plugin.reply(sender, "messages.help.header")
-        plugin.reply(sender, "messages.help.balance")
+        plugin.reply(sender, "messages.help.me")
+        plugin.reply(sender, "messages.help.buy")
+        plugin.reply(sender, "messages.help.top")
         plugin.reply(sender, "messages.help.pay")
-        plugin.reply(sender, "messages.help.baltop")
-        plugin.reply(sender, "messages.help.ledger")
-        plugin.reply(sender, "messages.help.currencies")
         if (sender.hasPermission("ecolink.admin")) {
-            plugin.reply(sender, "messages.help.admin-set")
-            plugin.reply(sender, "messages.help.admin-add")
-            plugin.reply(sender, "messages.help.admin-take")
-        }
-        if (sender.hasPermission("ecolink.recharge")) {
-            plugin.reply(sender, "messages.help.recharge")
-        }
-        if (sender.hasPermission("ecolink.migrate")) {
-            plugin.reply(sender, "messages.help.migrate")
+            plugin.reply(sender, "messages.help.create")
+            plugin.reply(sender, "messages.help.give")
+            plugin.reply(sender, "messages.help.reset")
+            plugin.reply(sender, "messages.help.delete")
+            plugin.reply(sender, "messages.help.reload")
         }
     }
 
-    private fun completePay(args: Array<out String>): MutableList<String> {
+    private fun completeStandalonePay(args: Array<out String>): MutableList<String> {
         return when (args.size) {
             1 -> onlinePlayers(args[0])
-            3 -> currencyKeys(args[2])
+            2 -> listOf("10", "100", "1000").filter { it.startsWith(args[1], ignoreCase = true) }.toMutableList()
+            else -> mutableListOf()
+        }
+    }
+
+    private fun completeMoney(args: Array<out String>, sender: CommandSender): MutableList<String> {
+        if (args.size == 1) {
+            val options = mutableListOf("pay", "top")
+            if (sender.hasPermission("ecolink.balance.others")) {
+                options += onlinePlayers(args[0])
+            }
+            return options.filter { it.startsWith(args[0], ignoreCase = true) }.distinct().toMutableList()
+        }
+        return when (args[0].lowercase()) {
+            "pay" -> when (args.size) {
+                2 -> onlinePlayers(args[1])
+                else -> mutableListOf()
+            }
+
+            "top" -> mutableListOf()
             else -> mutableListOf()
         }
     }
 
     private fun completeBalance(sender: CommandSender, args: Array<out String>): MutableList<String> {
         return when (args.size) {
-            1 -> {
-                val options = mutableListOf<String>()
-                options += currencyKeys(args[0])
-                if (sender.hasPermission("ecolink.balance.others")) {
-                    options += onlinePlayers(args[0])
-                }
-                options.distinct().toMutableList()
-            }
-
-            2 -> currencyKeys(args[1])
+            1 -> if (sender.hasPermission("ecolink.balance.others")) onlinePlayers(args[0]) else mutableListOf()
             else -> mutableListOf()
         }
     }
 
     private fun completeBaltop(args: Array<out String>): MutableList<String> {
-        return when (args.size) {
-            1 -> currencyKeys(args[0])
-            else -> mutableListOf()
-        }
+        return mutableListOf()
     }
 
     private fun completeRoot(sender: CommandSender, args: Array<out String>): MutableList<String> {
         if (args.size == 1) {
-            val options = mutableListOf("help", "ledger", "currencies")
+            val options = mutableListOf("help", "me", "buy", "top", "pay")
             if (sender.hasPermission("ecolink.admin")) {
-                options += listOf("set", "add", "take")
+                options += listOf("create", "give", "reset", "delete", "reload", "currencies")
+            }
+            if (sender.hasPermission("ecolink.ledger")) {
+                options += "ledger"
             }
             if (sender.hasPermission("ecolink.recharge")) {
                 options += "recharge"
@@ -702,10 +1038,48 @@ class EcoCommand(
             if (sender.hasPermission("ecolink.migrate")) {
                 options += "migrate"
             }
-            return options.filter { it.startsWith(args[0], ignoreCase = true) }.toMutableList()
+            return options.filter { it.startsWith(args[0], ignoreCase = true) }.distinct().toMutableList()
         }
 
         return when (args[0].lowercase()) {
+            "buy" -> when (args.size) {
+                2 -> productKeys(args[1])
+                else -> mutableListOf()
+            }
+
+            "top" -> when (args.size) {
+                2 -> currencyKeys(args[1])
+                else -> mutableListOf()
+            }
+
+            "pay" -> when (args.size) {
+                2 -> onlinePlayers(args[1])
+                3 -> currencyKeys(args[2])
+                else -> mutableListOf()
+            }
+
+            "create" -> when (args.size) {
+                2 -> disabledCurrencyKeys(args[1])
+                else -> mutableListOf()
+            }
+
+            "give" -> when (args.size) {
+                2 -> onlinePlayers(args[1])
+                3 -> currencyKeys(args[2])
+                else -> mutableListOf()
+            }
+
+            "reset" -> when (args.size) {
+                2 -> onlinePlayers(args[1])
+                3 -> currencyKeys(args[2])
+                else -> mutableListOf()
+            }
+
+            "delete" -> when (args.size) {
+                2 -> removableCurrencyKeys(args[1])
+                else -> mutableListOf()
+            }
+
             "migrate" -> completeMigrate(args)
             "set", "add", "take" -> completeAdminMutation(args)
             "recharge" -> completeRecharge(args)
@@ -753,7 +1127,30 @@ class EcoCommand(
     }
 
     private fun currencyKeys(prefix: String): MutableList<String> {
-        return plugin.bootstrapSettings.listCurrencies()
+        return plugin.activeSettings().listCurrencies()
+            .map { it.key }
+            .filter { it.startsWith(prefix, ignoreCase = true) }
+            .toMutableList()
+    }
+
+    private fun disabledCurrencyKeys(prefix: String): MutableList<String> {
+        return plugin.activeSettings().listDisabledCurrencies()
+            .map { it.key }
+            .filter { it.startsWith(prefix, ignoreCase = true) }
+            .toMutableList()
+    }
+
+    private fun removableCurrencyKeys(prefix: String): MutableList<String> {
+        val settings = plugin.activeSettings()
+        return settings.listCurrencies()
+            .filterNot { settings.currencyManagement.isProtected(it.key, settings.defaultCurrencyKey) }
+            .map { it.key }
+            .filter { it.startsWith(prefix, ignoreCase = true) }
+            .toMutableList()
+    }
+
+    private fun productKeys(prefix: String): MutableList<String> {
+        return plugin.activeSettings().shop.listProducts()
             .map { it.key }
             .filter { it.startsWith(prefix, ignoreCase = true) }
             .toMutableList()
@@ -771,11 +1168,10 @@ class EcoCommand(
 }
 
 private enum class AdminMutation(
-    val keyword: String,
     val usageKey: String,
     val messageKey: String
 ) {
-    SET("set", "admin-set", "messages.command.admin.set"),
-    ADD("add", "admin-add", "messages.command.admin.add"),
-    TAKE("take", "admin-take", "messages.command.admin.take")
+    SET("admin-set", "messages.command.admin.set"),
+    ADD("admin-add", "messages.command.admin.add"),
+    TAKE("admin-take", "messages.command.admin.take")
 }

@@ -2,6 +2,7 @@ package ym.ecolink.storage
 
 import ym.ecolink.economy.AccountIdentity
 import ym.ecolink.economy.AccountRecord
+import ym.ecolink.economy.CurrencyDeletionSummary
 import ym.ecolink.economy.ImportedBalance
 import ym.ecolink.economy.LedgerAction
 import ym.ecolink.economy.LedgerEntry
@@ -88,4 +89,6 @@ interface EconomyRepository {
         limit: Int,
         offset: Int
     ): List<LedgerEntry>
+
+    fun deleteCurrencyData(currencyKey: String): CurrencyDeletionSummary
 }

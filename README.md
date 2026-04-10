@@ -1,67 +1,109 @@
 # Ecolink
 
-Ecolink is a cross-server economy plugin for `Paper`, `Spigot`, and `Folia`.
+Ecolink 是一个面向 `Paper`、`Spigot`、`Folia` 的跨服经济插件。
 
-Current focus:
-- async database-backed economy core
-- PostgreSQL as the recommended primary backend
-- MySQL compatibility when you already run it
-- multi-currency balances with per-currency scale and transfer rules
-- idempotent recharge pipeline for webhooks, stores, and manual compensation
-- MiniMessage-based localization with configurable zh/en language packs
-- CMI and EssentialsX balance migration
-- optional Vault, PlaceholderAPI, and Redis balance sync bridges
+当前核心方向：
+- 异步数据库经济核心
+- `PostgreSQL` 作为默认推荐主库
+- 兼容 `MySQL`
+- 多货币模型，支持运行时启用与删除
+- 配置化商品购买系统
+- 幂等充值链路
+- 基于 MiniMessage 的中英文语言系统
+- CMI 与 EssentialsX 经济数据迁移
+- 可选接入 Vault、PlaceholderAPI、Redis 跨服同步
 
-## Highlights
+## 主要特性
 
-- All database reads, writes, migrations, and balance sync work run off the main thread.
-- Main-thread interaction is limited to safe Bukkit or Folia boundaries such as sending messages and registering hooks.
-- Account identity is stored separately from currency balances, so one player can hold multiple currencies cleanly.
-- Legacy single-balance tables are migrated into the default currency automatically on startup.
-- Recharge requests are deduplicated by `transactionId`, so repeated callbacks only apply once.
-- Runtime messages are loaded into memory at startup, so command responses do not touch disk IO.
-- This plugin does not mutate inventories or item stacks, so the current feature set does not introduce item loss or duplication paths.
+- 所有数据库读写、迁移、删除货币数据、余额同步都在主线程外执行。
+- 主线程只处理 Bukkit / Folia 必须的边界操作，例如发消息、注册桥接、执行配置化奖励命令。
+- 货币定义和已启用货币分离，`/el create` 与 `/el delete` 会持久化到配置文件并在重载后生效。
+- 运行时重载会重新构建插件服务，而不是在旧运行时上做危险热改。
+- 商品购买复用同一套异步经济服务，避免业务逻辑分叉。
+- 语言文件启动后加载进内存，运行期消息不走磁盘 IO。
 
-## Database Recommendation
+## 数据库建议
 
-Default recommendation: `PostgreSQL`
+默认推荐：`PostgreSQL`
 
-Why:
-- clearer transactional semantics for cross-server balance updates
-- better fit for future audit trails, recharge history, and management tooling
-- safer path when you expand into larger server clusters
+原因：
+- 跨服余额更新的事务语义更清晰
+- 更适合后续账单、审计、风控、管理面板扩展
+- 集群规模起来后更稳
 
-`MySQL` is still supported if that is what your stack already uses.
+如果你当前技术栈已经是 `MySQL`，也可以直接使用。
 
-## Commands
+## 指令设计
 
-- `/balance [player] [currency]`
-- `/pay <player> <amount> [currency]`
-- `/baltop [currency] [page]`
-- `/ecolink ledger [player] [currency] [page]`
-- `/ecolink currencies`
-- `/ecolink set <player> <amount> [currency]`
-- `/ecolink add <player> <amount> [currency]`
-- `/ecolink take <player> <amount> [currency]`
-- `/ecolink recharge <player> <currency> <amount> <transactionId> [reason...]`
-- `/ecolink migrate <cmi|essentials|all> [overwrite]`
+### 多货币指令
 
-## Permissions
+`el` 只处理多货币逻辑：
+
+- `/el me`
+- `/el buy <商品>`
+- `/el top <货币> [页码]`
+- `/el pay <玩家> <货币> <数量>`
+- `/el create <货币>`
+- `/el give <玩家> <货币> <数量>`
+- `/el reset <玩家> <货币>`
+- `/el delete <货币>`
+- `/el reload`
+
+### 单币种 / Vault 指令
+
+`money` 只处理 `Vault` 主货币：
+
+- `/money`
+- `/money <玩家>`
+- `/money pay <玩家> <数量>`
+- `/money top [页码]`
+
+### 兼容指令
+
+下面这些兼容命令现在也都是单币种主货币语义：
+
+- `/balance [玩家]`
+- `/pay <玩家> <数量>`
+- `/baltop [页码]`
+
+下面这些仍然保留在 `el` 下：
+
+- `/el ledger [玩家] [货币] [页码]`
+- `/el recharge <玩家> <货币> <数量> <事务号> [原因...]`
+- `/el migrate <cmi|essentials|all> [overwrite]`
+
+## 权限
+
+默认公开：
 
 - `ecolink.pay`
+
+默认管理员：
+
 - `ecolink.balance.others`
-- `ecolink.baltop`
 - `ecolink.ledger`
 - `ecolink.ledger.others`
-- `ecolink.admin`
 - `ecolink.recharge`
 - `ecolink.migrate`
+- `ecolink.admin`
 
-## Multi-Currency Model
+`/el me` 和 `/el buy` 默认不需要额外权限节点。
 
-Currencies are configured in `src/main/resources/config.yml` under `currencies.list`.
+## 多货币运行模型
 
-Per currency you can define:
+货币定义在 `config.yml` 的 `currencies.list` 中。
+
+当前启用的货币在 `currencies.enabled` 中。
+
+也就是说：
+
+- `currencies.list` 决定“系统里可以有哪些货币”
+- `currencies.enabled` 决定“当前真正启用了哪些货币”
+- `/el create <货币>` 会启用一个已在配置里定义过的货币
+- `/el delete <货币>` 会禁用该货币，并清掉它的余额、流水、充值记录
+
+每个货币可配置：
+
 - `display-name`
 - `symbol`
 - `scale`
@@ -69,107 +111,146 @@ Per currency you can define:
 - `transferable`
 - `vault-primary`
 
-Compatibility notes:
-- old commands still default to `currencies.default-key`
-- Vault exposes the currency marked with `vault-primary`, or the default currency if none is marked
-- PlaceholderAPI keeps `%ecolink_balance%` and `%ecolink_balance_formatted%`, and now also supports `%ecolink_balance_<currency>%` and `%ecolink_balance_formatted_<currency>%`
+运行时货币管理由这些配置控制：
 
-## Localization
+- `currencies.management.command-enabled`
+- `currencies.management.allow-create`
+- `currencies.management.allow-delete`
+- `currencies.management.protected`
 
-Language settings live in `src/main/resources/config.yml`:
+## 商品系统
+
+商品配置位于 `config.yml` 的 `shop.products`。
+
+每个商品支持：
+
+- `display-name`
+- `currency`
+- `price`
+- `commands`
+- `enabled`
+
+商品命令中可用占位符：
+
+- `<player>`
+- `<player_uuid>`
+- `<product>`
+- `<product_display>`
+- `<currency>`
+- `<currency_display>`
+- `<price>`
+- `<price_plain>`
+
+示例：
+
+```yaml
+shop:
+  enabled: true
+  products:
+    vip_week:
+      enabled: true
+      display-name: "VIP 7 Days"
+      currency: "coins"
+      price: "5000.00"
+      commands:
+        - "lp user <player> parent addtemp vip 7d"
+```
+
+## 语言系统
+
+语言配置在 `config.yml`：
 
 - `language.locale`
 - `language.fallback-locale`
 - `language.directory`
 
-Bundled language files:
+内置语言文件：
 
 - `lang/zh_CN.yml`
 - `lang/en_US.yml`
 
-Design notes:
+设计约定：
 
-- all runtime prompts are resolved from language files
-- `prefix` is a dedicated top-level key
-- other messages reuse it through the `<prefix>` placeholder
-- rendering uses `MiniMessage`, so RGB hex colors are supported directly
-- dynamic values are injected as unparsed placeholders to avoid placeholder injection problems
+- 所有运行时提示都来自语言文件
+- `prefix` 是独立顶层字段
+- 其他消息统一通过 `<prefix>` 复用
+- 渲染使用 `MiniMessage`，支持 RGB 十六进制颜色
 
-## Idempotent Recharge
+## 幂等充值
 
-Use `recharge` when money comes from an external source such as:
-- web store callbacks
-- payment webhooks
-- admin compensation scripts
-- future web control panel actions
+当经济金额来自外部系统时，使用 `recharge`：
 
-Example:
+- 商城回调
+- 支付 Webhook
+- 管理员补单
+- 后续 Web 管理面板入账
+
+示例：
 
 ```text
-/ecolink recharge Notch coins 100.00 order-2026-04-10-0001 Tebex
+/el recharge Notch coins 100.00 order-2026-04-10-0001 Tebex
 ```
 
-Behavior:
-- first call applies the recharge and records the transaction id
-- repeated calls with the same transaction id return the original result without applying the balance again
-- if the same transaction id is reused for a different player, currency, or amount, the call fails
+行为：
 
-## Migration
+- 第一次调用会真正入账，并记录事务号
+- 同一事务号重复调用，只返回原结果，不重复加钱
+- 同一事务号如果换了玩家、货币或金额，会直接报错
 
-The built-in migration pipeline imports into the default currency.
+## 数据迁移
 
-Supported sources:
+内置迁移默认导入到默认货币。
+
+支持来源：
+
 - `CMI sqlite`
 - `CMI mysql`
 - `EssentialsX userdata/*.yml`
 
-Commands:
+示例：
 
 ```text
-/ecolink migrate cmi
-/ecolink migrate essentials overwrite
-/ecolink migrate all
+/el migrate cmi
+/el migrate essentials overwrite
+/el migrate all
 ```
 
-## Optional Bridges
+## 可选桥接
 
-Vault:
-- Ecolink registers a primary economy bridge for the configured Vault currency.
-- Vault itself is synchronous, so the bridge uses a bounded timeout and delegates to the async core.
+### Vault
 
-PlaceholderAPI:
+- Ecolink 会把 `vault-primary` 对应的货币注册为主经济。
+- Vault 本身是同步接口，所以桥接层使用受限超时调用异步核心。
+
+### PlaceholderAPI
+
+支持：
+
 - `%ecolink_balance%`
 - `%ecolink_balance_formatted%`
 - `%ecolink_balance_coins%`
 - `%ecolink_balance_formatted_gems%`
 - `%ecolink_server%`
 
-Redis:
-- publishes cross-server balance snapshots after mutations
-- payloads now include `currencyKey`
-- legacy single-currency payloads are still accepted and mapped to the default currency
+### Redis
 
-## Build
+- 余额变更后会发布跨服同步消息
+- 同步载荷包含 `currencyKey`
 
-Requirements:
+## 构建
+
+环境要求：
+
 - `JDK 21`
 
-Build:
+构建命令：
 
 ```bash
 gradle build
 ```
 
-Artifact:
+构建产物：
 
 ```text
 build/libs/Ecolink-0.1.0-SNAPSHOT.jar
 ```
-
-## Next Logical Step
-
-The current architecture is ready for:
-- a web management panel
-- authenticated recharge webhooks
-- multi-currency leaderboards and ledger filters in external tools
-- settlement, billing, and anti-fraud workflows

@@ -26,7 +26,7 @@ class EcolinkPlaceholderExpansion(
             return null
         }
         val identity = AccountIdentity(player.uniqueId, player.name)
-        val settings = plugin.bootstrapSettings
+        val settings = plugin.activeSettings()
 
         return when {
             params.equals("server", ignoreCase = true) -> settings.serverId
@@ -48,7 +48,7 @@ class EcolinkPlaceholderExpansion(
     }
 
     private fun balancePlain(identity: AccountIdentity, currencyKey: String): String {
-        val settings = plugin.bootstrapSettings
+        val settings = plugin.activeSettings()
         val cached = economyService.peekCached(identity.uuid, currencyKey)
         if (cached == null) {
             economyService.ensureAccount(identity, currencyKey)
@@ -58,7 +58,7 @@ class EcolinkPlaceholderExpansion(
     }
 
     private fun balanceFormatted(identity: AccountIdentity, currencyKey: String): String {
-        val settings = plugin.bootstrapSettings
+        val settings = plugin.activeSettings()
         val cached = economyService.peekCached(identity.uuid, currencyKey)
         if (cached == null) {
             economyService.ensureAccount(identity, currencyKey)

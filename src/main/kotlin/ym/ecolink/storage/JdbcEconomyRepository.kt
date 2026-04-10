@@ -3,6 +3,7 @@ package ym.ecolink.storage
 import ym.ecolink.config.PluginSettings
 import ym.ecolink.economy.AccountIdentity
 import ym.ecolink.economy.AccountRecord
+import ym.ecolink.economy.CurrencyDeletionSummary
 import ym.ecolink.economy.ImportedBalance
 import ym.ecolink.economy.InsufficientFundsException
 import ym.ecolink.economy.LedgerAction
@@ -383,6 +384,24 @@ class JdbcEconomyRepository(
                     }
                     return results
                 }
+            }
+        }
+    }
+
+    override fun deleteCurrencyData(currencyKey: String): CurrencyDeletionSummary {
+        dataSource.connection.use { connection ->
+            connection.autoCommit = false
+            return transaction(connection) {
+                val normalizedCurrency = settings.requireCurrency(currencyKey).key
+                val deletedRecharges = deleteByCurrency(connection, rechargesTable, normalizedCurrency)
+                val deletedLedger = deleteByCurrency(connection, ledgerTable, normalizedCurrency)
+                val deletedBalances = deleteByCurrency(connection, balancesTable, normalizedCurrency)
+                CurrencyDeletionSummary(
+                    currencyKey = normalizedCurrency,
+                    balancesDeleted = deletedBalances,
+                    ledgerDeleted = deletedLedger,
+                    rechargesDeleted = deletedRecharges
+                )
             }
         }
     }
@@ -884,6 +903,13 @@ class JdbcEconomyRepository(
             connection.prepareStatement("SELECT $columnName FROM $tableName WHERE 1 = 0").use { }
             true
         }.getOrDefault(false)
+    }
+
+    private fun deleteByCurrency(connection: Connection, tableName: String, currencyKey: String): Int {
+        connection.prepareStatement("DELETE FROM $tableName WHERE currency_key = ?").use { statement ->
+            statement.setString(1, currencyKey)
+            return statement.executeUpdate()
+        }
     }
 
     private fun normalize(currencyKey: String, amount: BigDecimal): BigDecimal {

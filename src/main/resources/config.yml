@@ -21,6 +21,15 @@ economy:
 
 currencies:
   default-key: "coins"
+  enabled:
+    - "coins"
+    - "gems"
+  management:
+    command-enabled: true
+    allow-create: true
+    allow-delete: true
+    protected:
+      - "coins"
   list:
     coins:
       display-name: "Coins"
@@ -36,6 +45,31 @@ currencies:
       starting-balance: "0"
       transferable: false
       vault-primary: false
+    tokens:
+      display-name: "Tokens"
+      symbol: "T"
+      scale: 0
+      starting-balance: "0"
+      transferable: true
+      vault-primary: false
+
+shop:
+  enabled: true
+  products:
+    vip_week:
+      enabled: true
+      display-name: "VIP 7 Days"
+      currency: "coins"
+      price: "5000.00"
+      commands:
+        - "lp user <player> parent addtemp vip 7d"
+    gem_pack:
+      enabled: true
+      display-name: "Gem Pack x100"
+      currency: "coins"
+      price: "1200.00"
+      commands:
+        - "el give <player> gems 100"
 
 feature:
   top-page-size: 10

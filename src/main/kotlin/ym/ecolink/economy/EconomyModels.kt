@@ -73,6 +73,13 @@ enum class LedgerAction {
     RECHARGE
 }
 
+data class CurrencyDeletionSummary(
+    val currencyKey: String,
+    val balancesDeleted: Int,
+    val ledgerDeleted: Int,
+    val rechargesDeleted: Int
+)
+
 data class BalanceSyncRecord(
     val serverId: String,
     val uuid: UUID,
