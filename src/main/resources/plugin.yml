@@ -1,0 +1,30 @@
+name: Ecolink
+version: "${version}"
+main: ym.ecolink.Ecolink
+api-version: "26.1.1"
+folia-supported: true
+authors: [ ymxc ]
+description: "Cross-server async economy plugin with PostgreSQL/MySQL storage and CMI/EssentialsX migration."
+
+commands:
+  ecolink:
+    description: "Ecolink root command"
+    aliases: [ eco ]
+    usage: "/ecolink help"
+  balance:
+    description: "Check your balance"
+    aliases: [ bal, money ]
+    usage: "/balance [player]"
+  pay:
+    description: "Pay another player"
+    usage: "/pay <player> <amount>"
+
+permissions:
+  ecolink.pay:
+    default: true
+  ecolink.balance.others:
+    default: op
+  ecolink.admin:
+    default: op
+  ecolink.migrate:
+    default: op

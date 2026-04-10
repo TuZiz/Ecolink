@@ -1,0 +1,44 @@
+plugins {
+    kotlin("jvm") version "2.0.21"
+    id("com.gradleup.shadow") version "9.4.1"
+}
+
+group = "ym.ecolink"
+version = "0.1.0-SNAPSHOT"
+
+repositories {
+    mavenCentral()
+    maven("https://hub.spigotmc.org/nexus/content/repositories/snapshots/")
+}
+
+dependencies {
+    compileOnly("org.spigotmc:spigot-api:26.1.1-R0.1-SNAPSHOT")
+
+    implementation("org.jetbrains.kotlin:kotlin-stdlib-jdk8")
+    implementation("com.zaxxer:HikariCP:6.3.0")
+    implementation("org.postgresql:postgresql:42.7.8")
+    implementation("com.mysql:mysql-connector-j:9.4.0")
+    implementation("org.xerial:sqlite-jdbc:3.50.3.0")
+    implementation("org.yaml:snakeyaml:2.5")
+}
+
+kotlin {
+    jvmToolchain(21)
+}
+
+tasks {
+    build {
+        dependsOn(shadowJar)
+    }
+
+    processResources {
+        val props = mapOf("version" to version)
+        filesMatching("plugin.yml") {
+            expand(props)
+        }
+    }
+
+    shadowJar {
+        archiveClassifier.set("")
+    }
+}
