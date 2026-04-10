@@ -10,6 +10,7 @@ import org.bukkit.plugin.java.JavaPlugin
 import ym.ecolink.config.PluginSettings
 import ym.ecolink.economy.AccountIdentity
 import ym.ecolink.economy.EconomyService
+import ym.ecolink.economy.ReasonTags
 import java.math.BigDecimal
 import java.util.concurrent.TimeUnit
 
@@ -158,9 +159,9 @@ class EcolinkVaultEconomy(
     private fun runMutation(identity: AccountIdentity, amount: BigDecimal, deposit: Boolean): EconomyResponse {
         return try {
             val future = if (deposit) {
-                economyService.addBalance(identity, currency.key, amount, "Vault", "vault-deposit")
+                economyService.addBalance(identity, currency.key, amount, "Vault", ReasonTags.VAULT_DEPOSIT)
             } else {
-                economyService.takeBalance(identity, currency.key, amount, "Vault", "vault-withdraw")
+                economyService.takeBalance(identity, currency.key, amount, "Vault", ReasonTags.VAULT_WITHDRAW)
             }
             val record = future.get(settings.compatibility.vault.syncTimeoutMillis, TimeUnit.MILLISECONDS)
             EconomyResponse(amount.toDouble(), record.balance.toDouble(), EconomyResponse.ResponseType.SUCCESS, null)

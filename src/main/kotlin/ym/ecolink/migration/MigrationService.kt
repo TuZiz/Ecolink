@@ -2,13 +2,14 @@ package ym.ecolink.migration
 
 import ym.ecolink.config.PluginSettings
 import ym.ecolink.platform.ServerTaskDispatcher
-import ym.ecolink.storage.EconomyRepository
+import ym.ecolink.storage.EcolinkDataSourceFactory
+import ym.ecolink.storage.JdbcEconomyRepository
 import java.nio.file.Path
 import java.util.concurrent.CompletableFuture
 
 class MigrationService(
     private val settings: PluginSettings,
-    private val repository: EconomyRepository,
+    private val repository: JdbcEconomyRepository,
     private val dispatcher: ServerTaskDispatcher
 ) {
 
@@ -24,6 +25,29 @@ class MigrationService(
                 }
             }
             MigrationSummary(reports)
+        }
+    }
+
+    fun migrateStorage(overwrite: Boolean): CompletableFuture<StorageMigrationSummary> {
+        return dispatcher.supplyAsync {
+            val targetStorage = settings.migration.storageTarget.requireRemoteStorage()
+            require(!settings.storage.sameEndpointAs(targetStorage)) {
+                "Source storage and migration target cannot be the same endpoint."
+            }
+
+            val targetSettings = settings.copy(storage = targetStorage)
+            val targetDataSource = EcolinkDataSourceFactory.create(targetStorage)
+            try {
+                val targetRepository = JdbcEconomyRepository(
+                    dataSource = targetDataSource,
+                    tablePrefix = targetStorage.tablePrefix,
+                    settings = targetSettings
+                )
+                targetRepository.initialize()
+                repository.migrateStorageTo(targetRepository, overwrite)
+            } finally {
+                targetDataSource.close()
+            }
         }
     }
 

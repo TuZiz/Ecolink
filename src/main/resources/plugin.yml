@@ -14,7 +14,7 @@ commands:
     usage: "/el help"
   money:
     description: "Vault primary currency command"
-    usage: "/money [player]|pay <player> <amount>|top [page]"
+    usage: "/money [player]|pay <player> <amount>|top [page]|give <player> <amount>|set <player> <amount>|take <player> <amount>"
   balance:
     description: "Check balances"
     aliases: [ bal ]

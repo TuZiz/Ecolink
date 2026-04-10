@@ -37,6 +37,8 @@ currencies:
       scale: 2
       starting-balance: "0.00"
       transferable: true
+      player-visible: true
+      leaderboard-enabled: true
       vault-primary: true
     gems:
       display-name: "Gems"
@@ -44,6 +46,8 @@ currencies:
       scale: 0
       starting-balance: "0"
       transferable: false
+      player-visible: true
+      leaderboard-enabled: false
       vault-primary: false
     tokens:
       display-name: "Tokens"
@@ -51,6 +55,8 @@ currencies:
       scale: 0
       starting-balance: "0"
       transferable: true
+      player-visible: true
+      leaderboard-enabled: true
       vault-primary: false
 
 shop:
@@ -111,3 +117,17 @@ storage:
 migration:
   cmi-directory: "plugins/CMI"
   essentials-directory: "plugins/Essentials"
+  storage-target:
+    enabled: false
+    type: "postgresql"
+    host: "127.0.0.1"
+    port: 5432
+    database: "ecolink_cluster"
+    schema: "public"
+    username: "postgres"
+    password: "change-me"
+    table-prefix: "ecolink_"
+    pool:
+      maximum-size: 4
+      minimum-idle: 1
+      connection-timeout-millis: 10000

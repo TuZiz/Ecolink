@@ -12,6 +12,7 @@ import ym.ecolink.economy.AccountIdentity
 import ym.ecolink.economy.InsufficientFundsException
 import ym.ecolink.economy.LedgerEntry
 import ym.ecolink.economy.RechargeReceipt
+import ym.ecolink.economy.ReasonTags
 import ym.ecolink.i18n.ph
 import ym.ecolink.migration.MigrationKind
 import ym.ecolink.shop.ShopBusyException
@@ -102,13 +103,18 @@ class EcoCommand(
     private fun handleMe(sender: CommandSender, runtime: PluginRuntime): Boolean {
         val player = sender as? Player ?: return sendPlayerOnly(sender)
         val identity = AccountIdentity(player.uniqueId, player.name)
-        val futures = runtime.settings.listCurrencies().associate { currency ->
+        val visibleCurrencies = runtime.settings.listCurrencies().filter { it.playerVisible }
+        if (visibleCurrencies.isEmpty()) {
+            plugin.reply(sender, "messages.command.me.empty")
+            return true
+        }
+        val futures = visibleCurrencies.associate { currency ->
             currency.key to runtime.economyService.getBalance(identity, currency.key)
         }
         CompletableFuture.allOf(*futures.values.toTypedArray()).whenComplete { _, error ->
             complete(sender, runtime, error) {
                 plugin.replyLater(sender, "messages.command.me.header", ph("player", player.name))
-                runtime.settings.listCurrencies().forEach { currency ->
+                visibleCurrencies.forEach { currency ->
                     val record = futures.getValue(currency.key).join()
                     plugin.replyLater(
                         sender,
@@ -148,6 +154,10 @@ class EcoCommand(
             return sendUsage(sender, "top")
         }
         val currencyKey = parseCurrency(runtime, sender, args[1], null) ?: return true
+        if (!runtime.settings.requireCurrency(currencyKey).leaderboardEnabled) {
+            plugin.reply(sender, "messages.command.baltop.disabled-currency", ph("currency", runtime.settings.requireCurrency(currencyKey).displayName))
+            return true
+        }
         val page = parsePage(sender, args.getOrNull(2)) ?: return true
         return showTop(sender, runtime, currencyKey, page)
     }
@@ -216,7 +226,7 @@ class EcoCommand(
                     plugin.replyLater(sender, "messages.common.account-not-found-selector", ph("selector", args[1]))
                     return@complete
                 }
-                runtime.economyService.addBalance(target, currencyKey, amount, sender.name, "admin-give")
+                runtime.economyService.addBalance(target, currencyKey, amount, sender.name, ReasonTags.ADMIN_GIVE)
                     .whenComplete { record, mutationError ->
                         complete(sender, runtime, mutationError) {
                             plugin.replyLater(
@@ -256,7 +266,7 @@ class EcoCommand(
                     currencyKey = currency.key,
                     amount = currency.startingBalance,
                     actor = sender.name,
-                    reason = "admin-reset"
+                    reason = ReasonTags.ADMIN_RESET
                 ).whenComplete { record, resetError ->
                     complete(sender, runtime, resetError) {
                         plugin.replyLater(
@@ -353,6 +363,42 @@ class EcoCommand(
         }
 
         return when (args[0].lowercase()) {
+            "give" -> {
+                if (!sender.hasPermission("ecolink.admin")) {
+                    plugin.reply(sender, "messages.command.admin.no-permission")
+                    return true
+                }
+                if (args.size < 3) {
+                    return sendUsage(sender, "money-give")
+                }
+                val amount = parsePositiveAmount(runtime, sender, args[2], vaultCurrency.key) ?: return true
+                handleMoneyAdminMutation(sender, runtime, args[1], amount, MoneyAdminMutation.GIVE)
+            }
+
+            "set" -> {
+                if (!sender.hasPermission("ecolink.admin")) {
+                    plugin.reply(sender, "messages.command.admin.no-permission")
+                    return true
+                }
+                if (args.size < 3) {
+                    return sendUsage(sender, "money-set")
+                }
+                val amount = parseNonNegativeAmount(runtime, sender, args[2], vaultCurrency.key) ?: return true
+                handleMoneyAdminMutation(sender, runtime, args[1], amount, MoneyAdminMutation.SET)
+            }
+
+            "take" -> {
+                if (!sender.hasPermission("ecolink.admin")) {
+                    plugin.reply(sender, "messages.command.admin.no-permission")
+                    return true
+                }
+                if (args.size < 3) {
+                    return sendUsage(sender, "money-take")
+                }
+                val amount = parsePositiveAmount(runtime, sender, args[2], vaultCurrency.key) ?: return true
+                handleMoneyAdminMutation(sender, runtime, args[1], amount, MoneyAdminMutation.TAKE)
+            }
+
             "pay" -> {
                 val player = sender as? Player ?: return sendPlayerOnly(sender)
                 if (!player.hasPermission("ecolink.pay")) {
@@ -367,6 +413,10 @@ class EcoCommand(
             }
 
             "top" -> {
+                if (!vaultCurrency.leaderboardEnabled) {
+                    plugin.reply(sender, "messages.command.baltop.disabled-currency", ph("currency", vaultCurrency.displayName))
+                    return true
+                }
                 val page = parsePage(sender, args.getOrNull(1)) ?: return true
                 showTop(sender, runtime, vaultCurrency.key, page)
             }
@@ -389,6 +439,41 @@ class EcoCommand(
                 true
             }
         }
+    }
+
+    private fun handleMoneyAdminMutation(
+        sender: CommandSender,
+        runtime: PluginRuntime,
+        targetSelector: String,
+        amount: BigDecimal,
+        mutation: MoneyAdminMutation
+    ): Boolean {
+        val currency = runtime.settings.vaultCurrency()
+        resolveTarget(runtime, targetSelector).whenComplete { target, error ->
+            complete(sender, runtime, error) {
+                if (target == null) {
+                    plugin.replyLater(sender, "messages.common.account-not-found-selector", ph("selector", targetSelector))
+                    return@complete
+                }
+                val future = when (mutation) {
+                    MoneyAdminMutation.GIVE -> runtime.economyService.addBalance(target, currency.key, amount, sender.name, ReasonTags.ADMIN_GIVE)
+                    MoneyAdminMutation.SET -> runtime.economyService.setBalance(target, currency.key, amount, sender.name, ReasonTags.ADMIN_SET)
+                    MoneyAdminMutation.TAKE -> runtime.economyService.takeBalance(target, currency.key, amount, sender.name, ReasonTags.ADMIN_TAKE)
+                }
+                future.whenComplete { record, mutationError ->
+                    complete(sender, runtime, mutationError) {
+                        plugin.replyLater(
+                            sender,
+                            mutation.messageKey,
+                            ph("player", record.username),
+                            ph("currency", currency.displayName),
+                            ph("amount", runtime.settings.format(currency.key, record.balance))
+                        )
+                    }
+                }
+            }
+        }
+        return true
     }
 
     private fun handleBalance(sender: CommandSender, args: Array<out String>): Boolean {
@@ -493,7 +578,7 @@ class EcoCommand(
                     currencyKey = currency.key,
                     amount = amount,
                     actor = player.name,
-                    reason = "player-pay"
+                    reason = ReasonTags.PLAYER_PAY
                 ).whenComplete { receipt, payError ->
                     complete(sender, runtime, payError) {
                         plugin.replyLater(
@@ -522,8 +607,13 @@ class EcoCommand(
 
     private fun handleBaltop(sender: CommandSender, args: Array<out String>): Boolean {
         val runtime = requireReady(sender) ?: return true
+        val vaultCurrency = runtime.settings.vaultCurrency()
+        if (!vaultCurrency.leaderboardEnabled) {
+            plugin.reply(sender, "messages.command.baltop.disabled-currency", ph("currency", vaultCurrency.displayName))
+            return true
+        }
         val page = parsePage(sender, args.getOrNull(0)) ?: return true
-        return showTop(sender, runtime, runtime.settings.vaultCurrency().key, page)
+        return showTop(sender, runtime, vaultCurrency.key, page)
     }
 
     private fun showTop(sender: CommandSender, runtime: PluginRuntime, currencyKey: String, page: Int): Boolean {
@@ -582,9 +672,9 @@ class EcoCommand(
                     return@complete
                 }
                 val future = when (mutation) {
-                    AdminMutation.SET -> runtime.economyService.setBalance(target, currencyKey, amount, sender.name, "admin-set")
-                    AdminMutation.ADD -> runtime.economyService.addBalance(target, currencyKey, amount, sender.name, "admin-add")
-                    AdminMutation.TAKE -> runtime.economyService.takeBalance(target, currencyKey, amount, sender.name, "admin-take")
+                    AdminMutation.SET -> runtime.economyService.setBalance(target, currencyKey, amount, sender.name, ReasonTags.ADMIN_SET)
+                    AdminMutation.ADD -> runtime.economyService.addBalance(target, currencyKey, amount, sender.name, ReasonTags.ADMIN_ADD)
+                    AdminMutation.TAKE -> runtime.economyService.takeBalance(target, currencyKey, amount, sender.name, ReasonTags.ADMIN_TAKE)
                 }
                 future.whenComplete { record, mutationError ->
                     complete(sender, runtime, mutationError) {
@@ -618,7 +708,11 @@ class EcoCommand(
             plugin.reply(sender, "messages.command.recharge.blank-transaction-id")
             return true
         }
-        val reason = if (args.size > 5) args.copyOfRange(5, args.size).joinToString(" ") else "manual-recharge"
+        val reason = if (args.size > 5) {
+            ReasonTags.custom(args.copyOfRange(5, args.size).joinToString(" "), ReasonTags.RECHARGE_MANUAL)
+        } else {
+            ReasonTags.RECHARGE_MANUAL
+        }
 
         resolveTarget(runtime, args[1]).whenComplete { target, error ->
             complete(sender, runtime, error) {
@@ -672,6 +766,10 @@ class EcoCommand(
         if (args.size < 2) {
             return sendUsage(sender, "migrate")
         }
+        val source = args[1].lowercase()
+        if (source == "storage" || source == "db" || source == "database" || source == "remote") {
+            return handleStorageMigration(sender, runtime, args)
+        }
         val kind = MigrationKind.from(args[1]) ?: run {
             plugin.reply(sender, "messages.command.migrate.unknown-source", ph("source", args[1]))
             return true
@@ -703,6 +801,63 @@ class EcoCommand(
                     )
                     report.sampleErrors.forEach { sample ->
                         plugin.replyLater(sender, "messages.command.migrate.sample-error", ph("error", sample))
+                    }
+                }
+            }
+        }
+        return true
+    }
+
+    private fun handleStorageMigration(
+        sender: CommandSender,
+        runtime: PluginRuntime,
+        args: Array<out String>
+    ): Boolean {
+        val target = runtime.settings.migration.storageTarget
+        if (!target.enabled) {
+            plugin.reply(sender, "messages.command.migrate.storage-target-disabled")
+            return true
+        }
+        if (target.storage.type.id == "sqlite") {
+            plugin.reply(sender, "messages.command.migrate.storage-target-invalid")
+            return true
+        }
+        if (runtime.settings.storage.sameEndpointAs(target.storage)) {
+            plugin.reply(sender, "messages.command.migrate.storage-target-same")
+            return true
+        }
+        val overwrite = parseOverwrite(args.getOrNull(2))
+        plugin.reply(sender, "messages.command.migrate.storage-started")
+        runtime.migrationService.migrateStorage(overwrite).whenComplete { summary, error ->
+            complete(sender, runtime, error) {
+                plugin.replyLater(
+                    sender,
+                    "messages.command.migrate.storage-summary",
+                    ph("source", summary.source),
+                    ph("target", summary.target),
+                    ph("discovered", summary.discovered),
+                    ph("inserted", summary.inserted),
+                    ph("updated", summary.updated),
+                    ph("skipped", summary.skipped),
+                    ph("failed", summary.failed)
+                )
+                summary.reports.forEach { report ->
+                    plugin.replyLater(
+                        sender,
+                        "messages.command.migrate.storage-report",
+                        ph("table", report.table),
+                        ph("discovered", report.discovered),
+                        ph("inserted", report.inserted),
+                        ph("updated", report.updated),
+                        ph("skipped", report.skipped),
+                        ph("failed", report.failed)
+                    )
+                    report.sampleErrors.forEach { sample ->
+                        plugin.replyLater(
+                            sender,
+                            "messages.command.migrate.sample-error",
+                            ph("error", "${report.table}: $sample")
+                        )
                     }
                 }
             }
@@ -800,6 +955,8 @@ class EcoCommand(
                 if (currency.key == runtime.settings.defaultCurrencyKey) add(plugin.messages.raw("messages.command.currencies.tags.default"))
                 if (currency.vaultPrimary) add(plugin.messages.raw("messages.command.currencies.tags.vault"))
                 if (!currency.transferable) add(plugin.messages.raw("messages.command.currencies.tags.no-pay"))
+                if (!currency.playerVisible) add(plugin.messages.raw("messages.command.currencies.tags.hidden"))
+                if (!currency.leaderboardEnabled) add(plugin.messages.raw("messages.command.currencies.tags.no-top"))
             }
             val tagBlock = if (tags.isEmpty()) "" else "[${tags.joinToString(", ")}]"
             plugin.reply(
@@ -976,12 +1133,16 @@ class EcoCommand(
         plugin.reply(sender, "messages.help.buy")
         plugin.reply(sender, "messages.help.top")
         plugin.reply(sender, "messages.help.pay")
+        plugin.reply(sender, "messages.help.money")
         if (sender.hasPermission("ecolink.admin")) {
             plugin.reply(sender, "messages.help.create")
             plugin.reply(sender, "messages.help.give")
             plugin.reply(sender, "messages.help.reset")
             plugin.reply(sender, "messages.help.delete")
             plugin.reply(sender, "messages.help.reload")
+        }
+        if (sender.hasPermission("ecolink.migrate")) {
+            plugin.reply(sender, "messages.help.migrate-storage")
         }
     }
 
@@ -995,7 +1156,10 @@ class EcoCommand(
 
     private fun completeMoney(args: Array<out String>, sender: CommandSender): MutableList<String> {
         if (args.size == 1) {
-            val options = mutableListOf("pay", "top")
+            val options = mutableListOf("pay", "top", "help")
+            if (sender.hasPermission("ecolink.admin")) {
+                options += listOf("give", "set", "take")
+            }
             if (sender.hasPermission("ecolink.balance.others")) {
                 options += onlinePlayers(args[0])
             }
@@ -1004,6 +1168,17 @@ class EcoCommand(
         return when (args[0].lowercase()) {
             "pay" -> when (args.size) {
                 2 -> onlinePlayers(args[1])
+                3 -> listOf("10", "100", "1000").filter { it.startsWith(args[2], ignoreCase = true) }.toMutableList()
+                else -> mutableListOf()
+            }
+
+            "give", "set", "take" -> when (args.size) {
+                2 -> if (sender.hasPermission("ecolink.admin")) onlinePlayers(args[1]) else mutableListOf()
+                3 -> if (sender.hasPermission("ecolink.admin")) {
+                    listOf("10", "100", "1000").filter { it.startsWith(args[2], ignoreCase = true) }.toMutableList()
+                } else {
+                    mutableListOf()
+                }
                 else -> mutableListOf()
             }
 
@@ -1048,13 +1223,13 @@ class EcoCommand(
             }
 
             "top" -> when (args.size) {
-                2 -> currencyKeys(args[1])
+                2 -> leaderboardCurrencyKeys(args[1])
                 else -> mutableListOf()
             }
 
             "pay" -> when (args.size) {
                 2 -> onlinePlayers(args[1])
-                3 -> currencyKeys(args[2])
+                3 -> transferableCurrencyKeys(args[2])
                 else -> mutableListOf()
             }
 
@@ -1090,7 +1265,9 @@ class EcoCommand(
 
     private fun completeMigrate(args: Array<out String>): MutableList<String> {
         return when (args.size) {
-            2 -> listOf("cmi", "essentials", "all").filter { it.startsWith(args[1], ignoreCase = true) }.toMutableList()
+            2 -> listOf("cmi", "essentials", "all", "storage").filter {
+                it.startsWith(args[1], ignoreCase = true)
+            }.toMutableList()
             3 -> listOf("overwrite").filter { it.startsWith(args[2], ignoreCase = true) }.toMutableList()
             else -> mutableListOf()
         }
@@ -1128,6 +1305,22 @@ class EcoCommand(
 
     private fun currencyKeys(prefix: String): MutableList<String> {
         return plugin.activeSettings().listCurrencies()
+            .map { it.key }
+            .filter { it.startsWith(prefix, ignoreCase = true) }
+            .toMutableList()
+    }
+
+    private fun transferableCurrencyKeys(prefix: String): MutableList<String> {
+        return plugin.activeSettings().listCurrencies()
+            .filter { it.transferable }
+            .map { it.key }
+            .filter { it.startsWith(prefix, ignoreCase = true) }
+            .toMutableList()
+    }
+
+    private fun leaderboardCurrencyKeys(prefix: String): MutableList<String> {
+        return plugin.activeSettings().listCurrencies()
+            .filter { it.leaderboardEnabled }
             .map { it.key }
             .filter { it.startsWith(prefix, ignoreCase = true) }
             .toMutableList()
@@ -1174,4 +1367,13 @@ private enum class AdminMutation(
     SET("admin-set", "messages.command.admin.set"),
     ADD("admin-add", "messages.command.admin.add"),
     TAKE("admin-take", "messages.command.admin.take")
+}
+
+private enum class MoneyAdminMutation(
+    val usageKey: String,
+    val messageKey: String
+) {
+    GIVE("money-give", "messages.command.admin.give"),
+    SET("money-set", "messages.command.admin.set"),
+    TAKE("money-take", "messages.command.admin.take")
 }

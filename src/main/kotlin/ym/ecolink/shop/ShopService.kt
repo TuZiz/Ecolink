@@ -7,6 +7,7 @@ import ym.ecolink.config.PluginSettings
 import ym.ecolink.config.ShopProductDefinition
 import ym.ecolink.economy.AccountIdentity
 import ym.ecolink.economy.EconomyService
+import ym.ecolink.economy.ReasonTags
 import ym.ecolink.platform.ServerTaskDispatcher
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
@@ -39,7 +40,7 @@ class ShopService(
             currencyKey = currency.key,
             amount = product.price,
             actor = player.name,
-            reason = "shop-buy:${product.key}"
+            reason = ReasonTags.shopBuy(product.key)
         ).thenCompose { record ->
             val dispatchFuture = CompletableFuture<ShopPurchaseReceipt>()
             dispatcher.runGlobal {

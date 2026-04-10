@@ -98,7 +98,7 @@ data class PluginSettings(
         return listCatalogCurrencies().filterNot { isCurrencyEnabled(it.key) }
     }
 
-    companion object {
+        companion object {
         fun load(config: FileConfiguration, dataFolder: File? = null): PluginSettings {
             val legacyScale = max(0, config.getInt("economy.scale", 2))
             val legacyStartingBalance = BigDecimal(config.getString("economy.starting-balance", "0.00") ?: "0.00")
@@ -107,10 +107,17 @@ data class PluginSettings(
             val currencies = activeKeys.associateWith { catalog.getValue(it) }
             val defaultKey = (config.getString("currencies.default-key") ?: currencies.values.first().key).lowercase()
             require(currencies.containsKey(defaultKey)) { "Default currency '$defaultKey' is not enabled." }
-
             val type = DatabaseType.from(config.getString("storage.type"))
-            val sqliteFileRaw = config.getString("storage.sqlite.file", "ecolink.db") ?: "ecolink.db"
-            val sqliteFile = resolveSqliteFile(sqliteFileRaw, dataFolder)
+            val storage = loadStorageSettings(
+                config = config,
+                prefix = "storage",
+                type = type,
+                dataFolder = dataFolder,
+                defaultSqliteFile = "ecolink.db"
+            )
+            val migrationTargetType = DatabaseType.from(
+                config.getString("migration.storage-target.type", DatabaseType.POSTGRESQL.id)
+            )
             return PluginSettings(
                 serverId = config.getString("server.id", "server-1") ?: "server-1",
                 workerThreads = max(2, config.getInt("async.worker-threads", 4)),
@@ -148,25 +155,21 @@ data class PluginSettings(
                         ?: "ecolink:balance-sync",
                     timeoutMillis = config.getLong("sync.redis.timeout-millis", 2_000L).coerceAtLeast(250L)
                 ),
-                storage = StorageSettings(
-                    type = type,
-                    host = config.getString("storage.host", "127.0.0.1") ?: "127.0.0.1",
-                    port = config.getInt("storage.port", type.defaultPort),
-                    database = config.getString("storage.database", "ecolink") ?: "ecolink",
-                    sqliteFile = sqliteFile,
-                    schema = config.getString("storage.schema", "public") ?: "public",
-                    username = config.getString("storage.username", "postgres") ?: "postgres",
-                    password = config.getString("storage.password", "change-me") ?: "change-me",
-                    tablePrefix = sanitizePrefix(config.getString("storage.table-prefix", "ecolink_") ?: "ecolink_"),
-                    maximumPoolSize = max(2, config.getInt("storage.pool.maximum-size", 8)),
-                    minimumIdle = max(1, config.getInt("storage.pool.minimum-idle", 2)),
-                    connectionTimeoutMillis = config.getLong("storage.pool.connection-timeout-millis", 10_000L)
-                        .coerceAtLeast(1_000L)
-                ),
+                storage = storage,
                 migration = MigrationSettings(
                     cmiDataFolder = config.getString("migration.cmi-directory", "plugins/CMI") ?: "plugins/CMI",
                     essentialsDataFolder = config.getString("migration.essentials-directory", "plugins/Essentials")
-                        ?: "plugins/Essentials"
+                        ?: "plugins/Essentials",
+                    storageTarget = StorageMigrationTargetSettings(
+                        enabled = config.getBoolean("migration.storage-target.enabled", false),
+                        storage = loadStorageSettings(
+                            config = config,
+                            prefix = "migration.storage-target",
+                            type = migrationTargetType,
+                            dataFolder = dataFolder,
+                            defaultSqliteFile = "migration-target.db"
+                        )
+                    )
                 ),
                 currencyManagement = CurrencyManagementSettings(
                     commandEnabled = config.getBoolean("currencies.management.command-enabled", true),
@@ -196,6 +199,8 @@ data class PluginSettings(
                         scale = legacyScale,
                         startingBalance = legacyStartingBalance.setScale(legacyScale, RoundingMode.HALF_UP),
                         transferable = true,
+                        playerVisible = true,
+                        leaderboardEnabled = true,
                         vaultPrimary = true
                     )
                 )
@@ -240,6 +245,8 @@ data class PluginSettings(
                 scale = scale,
                 startingBalance = starting,
                 transferable = section.getBoolean("transferable", true),
+                playerVisible = section.getBoolean("player-visible", true),
+                leaderboardEnabled = section.getBoolean("leaderboard-enabled", true),
                 vaultPrimary = section.getBoolean("vault-primary", false)
             )
         }
@@ -289,6 +296,39 @@ data class PluginSettings(
             )
         }
 
+        private fun loadStorageSettings(
+            config: FileConfiguration,
+            prefix: String,
+            type: DatabaseType,
+            dataFolder: File?,
+            defaultSqliteFile: String
+        ): StorageSettings {
+            val sqliteFileRaw = config.getString("$prefix.sqlite.file", defaultSqliteFile) ?: defaultSqliteFile
+            return StorageSettings(
+                type = type,
+                host = config.getString("$prefix.host", "127.0.0.1") ?: "127.0.0.1",
+                port = config.getInt("$prefix.port", type.defaultPort),
+                database = config.getString("$prefix.database", "ecolink") ?: "ecolink",
+                sqliteFile = resolveSqliteFile(sqliteFileRaw, dataFolder),
+                schema = config.getString("$prefix.schema", "public") ?: "public",
+                username = config.getString("$prefix.username", defaultUsername(type)) ?: defaultUsername(type),
+                password = config.getString("$prefix.password", "change-me") ?: "change-me",
+                tablePrefix = sanitizePrefix(config.getString("$prefix.table-prefix", "ecolink_") ?: "ecolink_"),
+                maximumPoolSize = max(2, config.getInt("$prefix.pool.maximum-size", 8)),
+                minimumIdle = max(1, config.getInt("$prefix.pool.minimum-idle", 2)),
+                connectionTimeoutMillis = config.getLong("$prefix.pool.connection-timeout-millis", 10_000L)
+                    .coerceAtLeast(1_000L)
+            )
+        }
+
+        private fun defaultUsername(type: DatabaseType): String {
+            return when (type) {
+                DatabaseType.MYSQL -> "root"
+                DatabaseType.POSTGRESQL -> "postgres"
+                DatabaseType.SQLITE -> ""
+            }
+        }
+
         private fun sanitizePrefix(value: String): String {
             val filtered = value.filter { it.isLetterOrDigit() || it == '_' }
             if (filtered.isBlank()) {
@@ -314,6 +354,8 @@ data class CurrencyDefinition(
     val scale: Int,
     val startingBalance: BigDecimal,
     val transferable: Boolean,
+    val playerVisible: Boolean,
+    val leaderboardEnabled: Boolean,
     val vaultPrimary: Boolean
 )
 
@@ -330,12 +372,57 @@ data class StorageSettings(
     val maximumPoolSize: Int,
     val minimumIdle: Int,
     val connectionTimeoutMillis: Long
-)
+) {
+    fun sameEndpointAs(other: StorageSettings): Boolean {
+        if (type != other.type) {
+            return false
+        }
+        return when (type) {
+            DatabaseType.SQLITE -> File(sqliteFile).absoluteFile == File(other.sqliteFile).absoluteFile
+            DatabaseType.POSTGRESQL -> {
+                host.equals(other.host, ignoreCase = true) &&
+                    port == other.port &&
+                    database.equals(other.database, ignoreCase = true) &&
+                    schema.equals(other.schema, ignoreCase = true) &&
+                    tablePrefix.equals(other.tablePrefix, ignoreCase = true)
+            }
+
+            DatabaseType.MYSQL -> {
+                host.equals(other.host, ignoreCase = true) &&
+                    port == other.port &&
+                    database.equals(other.database, ignoreCase = true) &&
+                    tablePrefix.equals(other.tablePrefix, ignoreCase = true)
+            }
+        }
+    }
+
+    fun describe(): String {
+        return when (type) {
+            DatabaseType.SQLITE -> "${type.id}:${File(sqliteFile).name}"
+            DatabaseType.POSTGRESQL -> "${type.id}:$host:$port/$database@$schema"
+            DatabaseType.MYSQL -> "${type.id}:$host:$port/$database"
+        }
+    }
+}
 
 data class MigrationSettings(
     val cmiDataFolder: String,
-    val essentialsDataFolder: String
+    val essentialsDataFolder: String,
+    val storageTarget: StorageMigrationTargetSettings
 )
+
+data class StorageMigrationTargetSettings(
+    val enabled: Boolean,
+    val storage: StorageSettings
+) {
+    fun requireRemoteStorage(): StorageSettings {
+        require(enabled) { "Storage migration target is disabled in config." }
+        require(storage.type != DatabaseType.SQLITE) {
+            "Storage migration target must be PostgreSQL or MySQL."
+        }
+        return storage
+    }
+}
 
 data class LanguageSettings(
     val locale: String,

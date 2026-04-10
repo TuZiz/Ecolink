@@ -9,8 +9,11 @@ import ym.ecolink.economy.InsufficientFundsException
 import ym.ecolink.economy.LedgerAction
 import ym.ecolink.economy.LedgerEntry
 import ym.ecolink.economy.RechargeReceipt
+import ym.ecolink.economy.ReasonTags
 import ym.ecolink.economy.TransferReceipt
 import ym.ecolink.migration.SourceMigrationReport
+import ym.ecolink.migration.StorageMigrationReport
+import ym.ecolink.migration.StorageMigrationSummary
 import java.math.BigDecimal
 import java.sql.Connection
 import java.sql.SQLException
@@ -274,7 +277,16 @@ class JdbcEconomyRepository(
                                 serverId = serverId,
                                 touchIdentity = true
                             )
-                            appendLedger(connection, created, null, LedgerAction.MIGRATION, imported.balance, source, "Imported from $source", serverId)
+                            appendLedger(
+                                connection,
+                                created,
+                                null,
+                                LedgerAction.MIGRATION,
+                                imported.balance,
+                                source,
+                                migrationReasonFor(source, overwrite = false),
+                                serverId
+                            )
                             inserted++
                         } else if (overwrite) {
                             val rewritten = writeBalance(
@@ -291,7 +303,7 @@ class JdbcEconomyRepository(
                                 LedgerAction.MIGRATION,
                                 imported.balance,
                                 source,
-                                "Imported from $source (overwrite)",
+                                migrationReasonFor(source, overwrite = true),
                                 serverId
                             )
                             updated++
@@ -405,6 +417,242 @@ class JdbcEconomyRepository(
                 )
             }
         }
+    }
+
+    fun migrateStorageTo(target: JdbcEconomyRepository, overwrite: Boolean): StorageMigrationSummary {
+        dataSource.connection.use { sourceConnection ->
+            sourceConnection.autoCommit = true
+            target.dataSource.connection.use { targetConnection ->
+                targetConnection.autoCommit = false
+                return target.transaction(targetConnection) {
+                    StorageMigrationSummary(
+                        source = settings.storage.describe(),
+                        target = target.settings.storage.describe(),
+                        reports = listOf(
+                            migrateAccounts(sourceConnection, targetConnection, target, overwrite),
+                            migrateBalances(sourceConnection, targetConnection, target, overwrite),
+                            migrateLedger(sourceConnection, targetConnection, target, overwrite),
+                            migrateRecharges(sourceConnection, targetConnection, target, overwrite)
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    private fun migrateAccounts(
+        sourceConnection: Connection,
+        targetConnection: Connection,
+        target: JdbcEconomyRepository,
+        overwrite: Boolean
+    ): StorageMigrationReport {
+        var discovered = 0
+        var inserted = 0
+        var updated = 0
+        var skipped = 0
+        var failed = 0
+        val errors = mutableListOf<String>()
+        sourceConnection.prepareStatement(
+            """
+            SELECT uuid, username, created_at, updated_at, last_server
+            FROM $accountsTable
+            ORDER BY updated_at ASC, uuid ASC
+            """.trimIndent()
+        ).use { statement ->
+            statement.executeQuery().use { resultSet ->
+                while (resultSet.next()) {
+                    discovered++
+                    val row = AccountSnapshotRow(
+                        uuid = UUID.fromString(resultSet.getString("uuid")),
+                        username = resultSet.getString("username"),
+                        createdAt = resultSet.getTimestamp("created_at").toInstant(),
+                        updatedAt = resultSet.getTimestamp("updated_at").toInstant(),
+                        lastServer = resultSet.getString("last_server")
+                    )
+                    val savepoint = targetConnection.setSavepoint()
+                    try {
+                        when (target.upsertAccount(targetConnection, row, overwrite)) {
+                            RowWriteOutcome.INSERTED -> inserted++
+                            RowWriteOutcome.UPDATED -> updated++
+                            RowWriteOutcome.SKIPPED -> skipped++
+                        }
+                    } catch (error: Throwable) {
+                        targetConnection.rollback(savepoint)
+                        failed++
+                        if (errors.size < 5) {
+                            errors += "${row.username}: ${error.message ?: error.javaClass.simpleName}"
+                        }
+                    }
+                }
+            }
+        }
+        return StorageMigrationReport("accounts", discovered, inserted, updated, skipped, failed, errors)
+    }
+
+    private fun migrateBalances(
+        sourceConnection: Connection,
+        targetConnection: Connection,
+        target: JdbcEconomyRepository,
+        overwrite: Boolean
+    ): StorageMigrationReport {
+        var discovered = 0
+        var inserted = 0
+        var updated = 0
+        var skipped = 0
+        var failed = 0
+        val errors = mutableListOf<String>()
+        sourceConnection.prepareStatement(
+            """
+            SELECT account_uuid, currency_key, balance, version, created_at, updated_at, last_server
+            FROM $balancesTable
+            ORDER BY updated_at ASC, account_uuid ASC, currency_key ASC
+            """.trimIndent()
+        ).use { statement ->
+            statement.executeQuery().use { resultSet ->
+                while (resultSet.next()) {
+                    discovered++
+                    val currencyKey = resultSet.getString("currency_key")
+                    val row = BalanceSnapshotRow(
+                        accountUuid = UUID.fromString(resultSet.getString("account_uuid")),
+                        currencyKey = currencyKey,
+                        balance = normalize(currencyKey, resultSet.getBigDecimal("balance")),
+                        version = resultSet.getLong("version"),
+                        createdAt = resultSet.getTimestamp("created_at").toInstant(),
+                        updatedAt = resultSet.getTimestamp("updated_at").toInstant(),
+                        lastServer = resultSet.getString("last_server")
+                    )
+                    val savepoint = targetConnection.setSavepoint()
+                    try {
+                        when (target.upsertBalance(targetConnection, row, overwrite)) {
+                            RowWriteOutcome.INSERTED -> inserted++
+                            RowWriteOutcome.UPDATED -> updated++
+                            RowWriteOutcome.SKIPPED -> skipped++
+                        }
+                    } catch (error: Throwable) {
+                        targetConnection.rollback(savepoint)
+                        failed++
+                        if (errors.size < 5) {
+                            errors += "${row.accountUuid}/${row.currencyKey}: ${error.message ?: error.javaClass.simpleName}"
+                        }
+                    }
+                }
+            }
+        }
+        return StorageMigrationReport("balances", discovered, inserted, updated, skipped, failed, errors)
+    }
+
+    private fun migrateLedger(
+        sourceConnection: Connection,
+        targetConnection: Connection,
+        target: JdbcEconomyRepository,
+        overwrite: Boolean
+    ): StorageMigrationReport {
+        var discovered = 0
+        var inserted = 0
+        var updated = 0
+        var skipped = 0
+        var failed = 0
+        val errors = mutableListOf<String>()
+        sourceConnection.prepareStatement(
+            """
+            SELECT id, account_uuid, currency_key, counterparty_uuid, action, amount, balance_after,
+                   actor, reason, source_server, idempotency_key, created_at
+            FROM $ledgerTable
+            ORDER BY created_at ASC, id ASC
+            """.trimIndent()
+        ).use { statement ->
+            statement.executeQuery().use { resultSet ->
+                while (resultSet.next()) {
+                    discovered++
+                    val currencyKey = resultSet.getString("currency_key")
+                    val row = LedgerSnapshotRow(
+                        id = UUID.fromString(resultSet.getString("id")),
+                        accountUuid = UUID.fromString(resultSet.getString("account_uuid")),
+                        currencyKey = currencyKey,
+                        counterpartyUuid = resultSet.getString("counterparty_uuid")?.let(UUID::fromString),
+                        action = resultSet.getString("action"),
+                        amount = normalize(currencyKey, resultSet.getBigDecimal("amount")),
+                        balanceAfter = normalize(currencyKey, resultSet.getBigDecimal("balance_after")),
+                        actor = resultSet.getString("actor"),
+                        reason = resultSet.getString("reason"),
+                        sourceServer = resultSet.getString("source_server"),
+                        idempotencyKey = resultSet.getString("idempotency_key"),
+                        createdAt = resultSet.getTimestamp("created_at").toInstant()
+                    )
+                    val savepoint = targetConnection.setSavepoint()
+                    try {
+                        when (target.upsertLedger(targetConnection, row, overwrite)) {
+                            RowWriteOutcome.INSERTED -> inserted++
+                            RowWriteOutcome.UPDATED -> updated++
+                            RowWriteOutcome.SKIPPED -> skipped++
+                        }
+                    } catch (error: Throwable) {
+                        targetConnection.rollback(savepoint)
+                        failed++
+                        if (errors.size < 5) {
+                            errors += "${row.id}: ${error.message ?: error.javaClass.simpleName}"
+                        }
+                    }
+                }
+            }
+        }
+        return StorageMigrationReport("ledger", discovered, inserted, updated, skipped, failed, errors)
+    }
+
+    private fun migrateRecharges(
+        sourceConnection: Connection,
+        targetConnection: Connection,
+        target: JdbcEconomyRepository,
+        overwrite: Boolean
+    ): StorageMigrationReport {
+        var discovered = 0
+        var inserted = 0
+        var updated = 0
+        var skipped = 0
+        var failed = 0
+        val errors = mutableListOf<String>()
+        sourceConnection.prepareStatement(
+            """
+            SELECT transaction_id, account_uuid, currency_key, amount, balance_after, version,
+                   actor, reason, source_server, created_at
+            FROM $rechargesTable
+            ORDER BY created_at ASC, transaction_id ASC
+            """.trimIndent()
+        ).use { statement ->
+            statement.executeQuery().use { resultSet ->
+                while (resultSet.next()) {
+                    discovered++
+                    val currencyKey = resultSet.getString("currency_key")
+                    val row = RechargeSnapshotRow(
+                        transactionId = resultSet.getString("transaction_id"),
+                        accountUuid = UUID.fromString(resultSet.getString("account_uuid")),
+                        currencyKey = currencyKey,
+                        amount = normalize(currencyKey, resultSet.getBigDecimal("amount")),
+                        balanceAfter = normalize(currencyKey, resultSet.getBigDecimal("balance_after")),
+                        version = resultSet.getLong("version"),
+                        actor = resultSet.getString("actor"),
+                        reason = resultSet.getString("reason"),
+                        sourceServer = resultSet.getString("source_server"),
+                        createdAt = resultSet.getTimestamp("created_at").toInstant()
+                    )
+                    val savepoint = targetConnection.setSavepoint()
+                    try {
+                        when (target.upsertRecharge(targetConnection, row, overwrite)) {
+                            RowWriteOutcome.INSERTED -> inserted++
+                            RowWriteOutcome.UPDATED -> updated++
+                            RowWriteOutcome.SKIPPED -> skipped++
+                        }
+                    } catch (error: Throwable) {
+                        targetConnection.rollback(savepoint)
+                        failed++
+                        if (errors.size < 5) {
+                            errors += "${row.transactionId}: ${error.message ?: error.javaClass.simpleName}"
+                        }
+                    }
+                }
+            }
+        }
+        return StorageMigrationReport("recharges", discovered, inserted, updated, skipped, failed, errors)
     }
 
     private fun ensureAccountsTable(connection: Connection) {
@@ -566,6 +814,242 @@ class JdbcEconomyRepository(
             if (error !is SQLException || !isDuplicateKey(error, indexName)) {
                 throw error
             }
+        }
+    }
+
+    private fun upsertAccount(
+        connection: Connection,
+        row: AccountSnapshotRow,
+        overwrite: Boolean
+    ): RowWriteOutcome {
+        val existing = findIdentityByUuid(connection, row.uuid, forUpdate = true)
+        if (existing == null) {
+            insertAccount(connection, row)
+            return RowWriteOutcome.INSERTED
+        }
+        if (!overwrite) {
+            return RowWriteOutcome.SKIPPED
+        }
+        updateAccount(connection, row)
+        return RowWriteOutcome.UPDATED
+    }
+
+    private fun insertAccount(connection: Connection, row: AccountSnapshotRow) {
+        connection.prepareStatement(
+            """
+            INSERT INTO $accountsTable (uuid, username, created_at, updated_at, last_server)
+            VALUES (?, ?, ?, ?, ?)
+            """.trimIndent()
+        ).use { statement ->
+            statement.setString(1, row.uuid.toString())
+            statement.setString(2, row.username)
+            statement.setTimestamp(3, Timestamp.from(row.createdAt))
+            statement.setTimestamp(4, Timestamp.from(row.updatedAt))
+            statement.setString(5, row.lastServer)
+            statement.executeUpdate()
+        }
+    }
+
+    private fun updateAccount(connection: Connection, row: AccountSnapshotRow) {
+        connection.prepareStatement(
+            """
+            UPDATE $accountsTable
+            SET username = ?, created_at = ?, updated_at = ?, last_server = ?
+            WHERE uuid = ?
+            """.trimIndent()
+        ).use { statement ->
+            statement.setString(1, row.username)
+            statement.setTimestamp(2, Timestamp.from(row.createdAt))
+            statement.setTimestamp(3, Timestamp.from(row.updatedAt))
+            statement.setString(4, row.lastServer)
+            statement.setString(5, row.uuid.toString())
+            statement.executeUpdate()
+        }
+    }
+
+    private fun upsertBalance(
+        connection: Connection,
+        row: BalanceSnapshotRow,
+        overwrite: Boolean
+    ): RowWriteOutcome {
+        val existing = findBalanceByUuid(connection, row.accountUuid, row.currencyKey, forUpdate = true)
+        if (existing == null) {
+            insertBalance(connection, row)
+            return RowWriteOutcome.INSERTED
+        }
+        if (!overwrite) {
+            return RowWriteOutcome.SKIPPED
+        }
+        updateBalance(connection, row)
+        return RowWriteOutcome.UPDATED
+    }
+
+    private fun insertBalance(connection: Connection, row: BalanceSnapshotRow) {
+        connection.prepareStatement(
+            """
+            INSERT INTO $balancesTable (account_uuid, currency_key, balance, version, created_at, updated_at, last_server)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """.trimIndent()
+        ).use { statement ->
+            statement.setString(1, row.accountUuid.toString())
+            statement.setString(2, row.currencyKey)
+            statement.setBigDecimal(3, normalize(row.currencyKey, row.balance))
+            statement.setLong(4, row.version)
+            statement.setTimestamp(5, Timestamp.from(row.createdAt))
+            statement.setTimestamp(6, Timestamp.from(row.updatedAt))
+            statement.setString(7, row.lastServer)
+            statement.executeUpdate()
+        }
+    }
+
+    private fun updateBalance(connection: Connection, row: BalanceSnapshotRow) {
+        connection.prepareStatement(
+            """
+            UPDATE $balancesTable
+            SET balance = ?, version = ?, created_at = ?, updated_at = ?, last_server = ?
+            WHERE account_uuid = ? AND currency_key = ?
+            """.trimIndent()
+        ).use { statement ->
+            statement.setBigDecimal(1, normalize(row.currencyKey, row.balance))
+            statement.setLong(2, row.version)
+            statement.setTimestamp(3, Timestamp.from(row.createdAt))
+            statement.setTimestamp(4, Timestamp.from(row.updatedAt))
+            statement.setString(5, row.lastServer)
+            statement.setString(6, row.accountUuid.toString())
+            statement.setString(7, row.currencyKey)
+            statement.executeUpdate()
+        }
+    }
+
+    private fun upsertLedger(
+        connection: Connection,
+        row: LedgerSnapshotRow,
+        overwrite: Boolean
+    ): RowWriteOutcome {
+        val existing = findLedgerById(connection, row.id, forUpdate = true)
+        if (existing == null) {
+            insertLedger(connection, row)
+            return RowWriteOutcome.INSERTED
+        }
+        if (!overwrite) {
+            return RowWriteOutcome.SKIPPED
+        }
+        updateLedger(connection, row)
+        return RowWriteOutcome.UPDATED
+    }
+
+    private fun insertLedger(connection: Connection, row: LedgerSnapshotRow) {
+        connection.prepareStatement(
+            """
+            INSERT INTO $ledgerTable (
+                id, account_uuid, currency_key, counterparty_uuid, action, amount, balance_after,
+                actor, reason, source_server, idempotency_key, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """.trimIndent()
+        ).use { statement ->
+            statement.setString(1, row.id.toString())
+            statement.setString(2, row.accountUuid.toString())
+            statement.setString(3, row.currencyKey)
+            statement.setString(4, row.counterpartyUuid?.toString())
+            statement.setString(5, row.action)
+            statement.setBigDecimal(6, normalize(row.currencyKey, row.amount))
+            statement.setBigDecimal(7, normalize(row.currencyKey, row.balanceAfter))
+            statement.setString(8, row.actor?.let { truncate(it, 64) })
+            statement.setString(9, row.reason?.let { truncate(it, 128) })
+            statement.setString(10, row.sourceServer)
+            statement.setString(11, row.idempotencyKey?.take(128))
+            statement.setTimestamp(12, Timestamp.from(row.createdAt))
+            statement.executeUpdate()
+        }
+    }
+
+    private fun updateLedger(connection: Connection, row: LedgerSnapshotRow) {
+        connection.prepareStatement(
+            """
+            UPDATE $ledgerTable
+            SET account_uuid = ?, currency_key = ?, counterparty_uuid = ?, action = ?, amount = ?, balance_after = ?,
+                actor = ?, reason = ?, source_server = ?, idempotency_key = ?, created_at = ?
+            WHERE id = ?
+            """.trimIndent()
+        ).use { statement ->
+            statement.setString(1, row.accountUuid.toString())
+            statement.setString(2, row.currencyKey)
+            statement.setString(3, row.counterpartyUuid?.toString())
+            statement.setString(4, row.action)
+            statement.setBigDecimal(5, normalize(row.currencyKey, row.amount))
+            statement.setBigDecimal(6, normalize(row.currencyKey, row.balanceAfter))
+            statement.setString(7, row.actor?.let { truncate(it, 64) })
+            statement.setString(8, row.reason?.let { truncate(it, 128) })
+            statement.setString(9, row.sourceServer)
+            statement.setString(10, row.idempotencyKey?.take(128))
+            statement.setTimestamp(11, Timestamp.from(row.createdAt))
+            statement.setString(12, row.id.toString())
+            statement.executeUpdate()
+        }
+    }
+
+    private fun upsertRecharge(
+        connection: Connection,
+        row: RechargeSnapshotRow,
+        overwrite: Boolean
+    ): RowWriteOutcome {
+        val existing = findRecharge(connection, row.transactionId, forUpdate = true)
+        if (existing == null) {
+            insertRecharge(connection, row)
+            return RowWriteOutcome.INSERTED
+        }
+        if (!overwrite) {
+            return RowWriteOutcome.SKIPPED
+        }
+        updateRecharge(connection, row)
+        return RowWriteOutcome.UPDATED
+    }
+
+    private fun insertRecharge(connection: Connection, row: RechargeSnapshotRow) {
+        connection.prepareStatement(
+            """
+            INSERT INTO $rechargesTable (
+                transaction_id, account_uuid, currency_key, amount, balance_after, version,
+                actor, reason, source_server, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """.trimIndent()
+        ).use { statement ->
+            statement.setString(1, row.transactionId.take(128))
+            statement.setString(2, row.accountUuid.toString())
+            statement.setString(3, row.currencyKey)
+            statement.setBigDecimal(4, normalize(row.currencyKey, row.amount))
+            statement.setBigDecimal(5, normalize(row.currencyKey, row.balanceAfter))
+            statement.setLong(6, row.version)
+            statement.setString(7, row.actor?.let { truncate(it, 64) })
+            statement.setString(8, row.reason?.let { truncate(it, 128) })
+            statement.setString(9, row.sourceServer)
+            statement.setTimestamp(10, Timestamp.from(row.createdAt))
+            statement.executeUpdate()
+        }
+    }
+
+    private fun updateRecharge(connection: Connection, row: RechargeSnapshotRow) {
+        connection.prepareStatement(
+            """
+            UPDATE $rechargesTable
+            SET account_uuid = ?, currency_key = ?, amount = ?, balance_after = ?, version = ?,
+                actor = ?, reason = ?, source_server = ?, created_at = ?
+            WHERE transaction_id = ?
+            """.trimIndent()
+        ).use { statement ->
+            statement.setString(1, row.accountUuid.toString())
+            statement.setString(2, row.currencyKey)
+            statement.setBigDecimal(3, normalize(row.currencyKey, row.amount))
+            statement.setBigDecimal(4, normalize(row.currencyKey, row.balanceAfter))
+            statement.setLong(5, row.version)
+            statement.setString(6, row.actor?.let { truncate(it, 64) })
+            statement.setString(7, row.reason?.let { truncate(it, 128) })
+            statement.setString(8, row.sourceServer)
+            statement.setTimestamp(9, Timestamp.from(row.createdAt))
+            statement.setString(10, row.transactionId.take(128))
+            statement.executeUpdate()
         }
     }
 
@@ -880,6 +1364,21 @@ class JdbcEconomyRepository(
         }
     }
 
+    private fun findLedgerById(connection: Connection, id: UUID, forUpdate: Boolean): UUID? {
+        val sql = buildString {
+            append("SELECT id FROM $ledgerTable WHERE id = ?")
+            if (forUpdate && supportsForUpdate) {
+                append(" FOR UPDATE")
+            }
+        }
+        connection.prepareStatement(sql).use { statement ->
+            statement.setString(1, id.toString())
+            statement.executeQuery().use { resultSet ->
+                return if (resultSet.next()) UUID.fromString(resultSet.getString("id")) else null
+            }
+        }
+    }
+
     private fun mapAccount(resultSet: java.sql.ResultSet): AccountRecord {
         val currencyKey = resultSet.getString("currency_key")
         return AccountRecord(
@@ -921,6 +1420,15 @@ class JdbcEconomyRepository(
         return if (value.length <= maxLength) value else value.take(maxLength)
     }
 
+    private fun migrationReasonFor(source: String, overwrite: Boolean): String {
+        val base = when (source.lowercase()) {
+            "cmi" -> ReasonTags.MIGRATION_CMI
+            "essentials", "essentialsx", "ess" -> ReasonTags.MIGRATION_ESSENTIALS
+            else -> ReasonTags.custom(source, "migration.import")
+        }
+        return if (overwrite) "$base.overwrite" else base
+    }
+
     private fun <T> transaction(connection: Connection, action: () -> T): T {
         try {
             val result = action()
@@ -940,6 +1448,58 @@ class JdbcEconomyRepository(
             error.message?.contains("already exists", ignoreCase = true) == true ||
             matchesIndex
     }
+
+    private enum class RowWriteOutcome {
+        INSERTED,
+        UPDATED,
+        SKIPPED
+    }
+
+    private data class AccountSnapshotRow(
+        val uuid: UUID,
+        val username: String,
+        val createdAt: Instant,
+        val updatedAt: Instant,
+        val lastServer: String?
+    )
+
+    private data class BalanceSnapshotRow(
+        val accountUuid: UUID,
+        val currencyKey: String,
+        val balance: BigDecimal,
+        val version: Long,
+        val createdAt: Instant,
+        val updatedAt: Instant,
+        val lastServer: String?
+    )
+
+    private data class LedgerSnapshotRow(
+        val id: UUID,
+        val accountUuid: UUID,
+        val currencyKey: String,
+        val counterpartyUuid: UUID?,
+        val action: String,
+        val amount: BigDecimal,
+        val balanceAfter: BigDecimal,
+        val actor: String?,
+        val reason: String?,
+        val sourceServer: String,
+        val idempotencyKey: String?,
+        val createdAt: Instant
+    )
+
+    private data class RechargeSnapshotRow(
+        val transactionId: String,
+        val accountUuid: UUID,
+        val currencyKey: String,
+        val amount: BigDecimal,
+        val balanceAfter: BigDecimal,
+        val version: Long,
+        val actor: String?,
+        val reason: String?,
+        val sourceServer: String,
+        val createdAt: Instant
+    )
 
     private data class RechargeRow(
         val transactionId: String,

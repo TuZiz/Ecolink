@@ -1,8 +1,11 @@
-prefix: '<gradient:#4FC3F7:#7CFFCB><bold>Ecolink</bold></gradient><gray> • </gray>'
+prefix: '<gradient:#4FC3F7:#7CFFCB><bold>Ecolink</bold></gradient><gray> | </gray>'
 
 usage:
   root: '/el <me|buy|top|pay|create|give|reset|delete|reload|help>'
-  money-root: '/money [player]|pay <player> <amount>|top [page]'
+  money-root: '/money [player]|pay <player> <amount>|top [page]|give <player> <amount>|set <player> <amount>|take <player> <amount>'
+  money-give: '/money give <player> <amount>'
+  money-set: '/money set <player> <amount>'
+  money-take: '/money take <player> <amount>'
   balance-other: '/balance [player]'
   pay: '/pay <player> <amount>'
   pay-root: '/el pay <player> <currency> <amount>'
@@ -17,7 +20,7 @@ usage:
   admin-add: '/el add <player> <amount> [currency]'
   admin-take: '/el take <player> <amount> [currency]'
   recharge: '/el recharge <player> <currency> <amount> <transactionId> [reason...]'
-  migrate: '/el migrate <cmi|essentials|all> [overwrite]'
+  migrate: '/el migrate <cmi|essentials|all|storage> [overwrite]'
   ledger: '/el ledger <player> [currency] [page]'
 
 messages:
@@ -41,19 +44,22 @@ messages:
     not-available: 'n/a'
   help:
     header: '<prefix><gradient:#4FC3F7:#7CFFCB><bold>Command Guide</bold></gradient>'
-    me: '<prefix><#7CFFCB>/el me</#7CFFCB> <gray>- view all of your enabled balances</gray>'
+    me: '<prefix><#7CFFCB>/el me</#7CFFCB> <gray>- view all player-visible balances</gray>'
     buy: '<prefix><#7CFFCB>/el buy <product></#7CFFCB> <gray>- buy a configured product</gray>'
-    top: '<prefix><#7CFFCB>/el top <currency> [page]</#7CFFCB> <gray>- view the currency leaderboard</gray>'
-    pay: '<prefix><#7CFFCB>/el pay <player> <currency> <amount></#7CFFCB> <gray>- transfer currency to another player</gray>'
+    top: '<prefix><#7CFFCB>/el top <currency> [page]</#7CFFCB> <gray>- view a multi-currency leaderboard</gray>'
+    pay: '<prefix><#7CFFCB>/el pay <player> <currency> <amount></#7CFFCB> <gray>- transfer a specific currency</gray>'
+    money: '<prefix><#7CFFCB>/money</#7CFFCB> <gray>- view or operate on the Vault primary currency</gray>'
     create: '<prefix><#FFD166>/el create <currency></#FFD166> <gray>- enable a configured currency</gray>'
-    give: '<prefix><#FFD166>/el give <player> <currency> <amount></#FFD166> <gray>- grant currency to a player</gray>'
-    reset: '<prefix><#FFD166>/el reset <player> <currency></#FFD166> <gray>- reset a balance to the configured starting amount</gray>'
+    give: '<prefix><#FFD166>/el give <player> <currency> <amount></#FFD166> <gray>- grant a specific currency</gray>'
+    reset: '<prefix><#FFD166>/el reset <player> <currency></#FFD166> <gray>- reset a balance to the configured start value</gray>'
     delete: '<prefix><#FFD166>/el delete <currency></#FFD166> <gray>- disable a currency and purge its data</gray>'
-    reload: '<prefix><#FFD166>/el reload</#FFD166> <gray>- reload config, languages, and runtime services</gray>'
+    reload: '<prefix><#FFD166>/el reload</#FFD166> <gray>- reload config, language, and runtime services</gray>'
+    migrate-storage: '<prefix><#FFD166>/el migrate storage [overwrite]</#FFD166> <gray>- copy the active database into the configured remote target</gray>'
   command:
     me:
       header: '<prefix><gradient:#4FC3F7:#7CFFCB><bold>Your Economy Profile</bold></gradient>'
-      line: '<prefix><white><currency></white> <gray>→</gray> <white><amount></white>'
+      line: '<prefix><white><currency></white> <gray>-></gray> <white><amount></white>'
+      empty: '<prefix><#FFD166>No player-visible currencies are currently enabled.</#FFD166>'
     buy:
       disabled: '<prefix><#FF6B6B>The shop is disabled.</#FF6B6B>'
       unknown-product: '<prefix><#FF6B6B>Unknown product:</#FF6B6B> <white><product></white>'
@@ -72,15 +78,16 @@ messages:
       sent: '<prefix><#7CFFCB>Paid</#7CFFCB> <white><target></white> <white><amount></white> <gray>(remaining <balance>)</gray>'
       received: '<prefix><#7CFFCB>Received</#7CFFCB> <white><amount></white> <gray>from</gray> <white><player></white>'
     baltop:
-      header: '<prefix><gradient:#4FC3F7:#7CFFCB><bold>Balance Top</bold></gradient> <gray><currency> · page <page></gray>'
+      header: '<prefix><gradient:#4FC3F7:#7CFFCB><bold>Balance Top</bold></gradient> <gray><currency> | page <page></gray>'
       empty: '<prefix><gray>No account data on this page.</gray>'
       line: '<prefix><#FFD166>#<rank></#FFD166> <white><player></white> <gray>-</gray> <white><amount></white>'
+      disabled-currency: '<prefix><#FF6B6B><currency> is excluded from leaderboards.</#FF6B6B>'
     admin:
       no-permission: '<prefix><#FF6B6B>You do not have admin permission.</#FF6B6B>'
       set: '<prefix><#7CFFCB>Balance set for</#7CFFCB> <white><player></white> <gray>to</gray> <white><amount></white>'
       add: '<prefix><#7CFFCB>Balance added for</#7CFFCB> <white><player></white> <gray>to</gray> <white><amount></white>'
       take: '<prefix><#7CFFCB>Balance removed for</#7CFFCB> <white><player></white> <gray>to</gray> <white><amount></white>'
-      give: '<prefix><#7CFFCB>Granted</#7CFFCB> <white><currency></white> <gray>to</gray> <white><player></white> <gray>→ current</gray> <white><amount></white>'
+      give: '<prefix><#7CFFCB>Granted</#7CFFCB> <white><currency></white> <gray>to</gray> <white><player></white> <gray>| current</gray> <white><amount></white>'
       reset: '<prefix><#7CFFCB>Reset</#7CFFCB> <white><player></white> <gray><currency> balance to</gray> <white><amount></white>'
     currency:
       disabled: '<prefix><#FF6B6B>Currency runtime management is disabled in config.</#FF6B6B>'
@@ -100,16 +107,22 @@ messages:
     migrate:
       no-permission: '<prefix><#FF6B6B>You do not have migration permission.</#FF6B6B>'
       unknown-source: '<prefix><#FF6B6B>Unknown migration source:</#FF6B6B> <white><source></white>'
+      storage-target-disabled: '<prefix><#FF6B6B>Storage migration target is disabled in config.</#FF6B6B>'
+      storage-target-invalid: '<prefix><#FF6B6B>Storage migration target must use PostgreSQL or MySQL.</#FF6B6B>'
+      storage-target-same: '<prefix><#FF6B6B>Source storage and target storage cannot be the same endpoint.</#FF6B6B>'
       started: '<prefix><#FFD166>Migration started in background.</#FFD166>'
       summary: '<prefix><#7CFFCB>Migration complete</#7CFFCB> <white><source></white> <gray>(found <discovered>, inserted <inserted>, updated <updated>, skipped <skipped>, failed <failed>)</gray>'
       report: '<prefix><white><source></white> <gray>found <discovered>, inserted <inserted>, updated <updated>, skipped <skipped>, failed <failed></gray>'
+      storage-started: '<prefix><#FFD166>Storage migration started in background.</#FFD166>'
+      storage-summary: '<prefix><#7CFFCB>Storage migration complete</#7CFFCB> <gray><source> -> <target></gray> <gray>(found <discovered>, inserted <inserted>, updated <updated>, skipped <skipped>, failed <failed>)</gray>'
+      storage-report: '<prefix><white><table></white> <gray>found <discovered>, inserted <inserted>, updated <updated>, skipped <skipped>, failed <failed></gray>'
       sample-error: '<prefix><#FF6B6B>Sample error:</#FF6B6B> <white><error></white>'
     ledger:
       no-permission: '<prefix><#FF6B6B>You do not have permission to view ledger entries.</#FF6B6B>'
       no-permission-others: '<prefix><#FF6B6B>You do not have permission to view other players ledger entries.</#FF6B6B>'
-      header: '<prefix><gradient:#4FC3F7:#7CFFCB><bold>Ledger</bold></gradient> <white><player></white> <gray>(<currency> · page <page>)</gray>'
+      header: '<prefix><gradient:#4FC3F7:#7CFFCB><bold>Ledger</bold></gradient> <white><player></white> <gray>(<currency> | page <page>)</gray>'
       empty: '<prefix><gray>No ledger entries on this page.</gray>'
-      line: '<prefix><gray>[<time>]</gray> <#FFD166><action></#FFD166> <white><amount></white> <gray>→</gray> <white><balance></white> <dark_gray>(<server>, <reason>, tx <transaction>)</dark_gray>'
+      line: '<prefix><gray>[<time>]</gray> <#FFD166><action></#FFD166> <white><amount></white> <gray>-></gray> <white><balance></white> <dark_gray>(<server>, <reason>, tx <transaction>)</dark_gray>'
     currencies:
       header: '<prefix><gradient:#4FC3F7:#7CFFCB><bold>Currencies</bold></gradient>'
       line: '<prefix><#7CFFCB><key></#7CFFCB> <gray>(<display>)</gray> <gray>start:</gray> <white><amount></white> <dark_gray><tags></dark_gray>'
@@ -117,3 +130,5 @@ messages:
         default: 'default'
         vault: 'vault'
         no-pay: 'no-pay'
+        hidden: 'hidden'
+        no-top: 'no-top'
