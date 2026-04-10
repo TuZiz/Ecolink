@@ -1,0 +1,32 @@
+# PostgreSQL is the recommended primary storage for cross-server economy clusters.
+# MySQL is still supported when you need it.
+
+server:
+  id: "server-1"
+
+async:
+  worker-threads: 4
+
+economy:
+  currency-symbol: "$"
+  scale: 2
+  starting-balance: "0.00"
+  cache-ttl-millis: 2000
+
+storage:
+  type: "postgresql"
+  host: "127.0.0.1"
+  port: 5432
+  database: "ecolink"
+  schema: "public"
+  username: "postgres"
+  password: "change-me"
+  table-prefix: "ecolink_"
+  pool:
+    maximum-size: 8
+    minimum-idle: 2
+    connection-timeout-millis: 10000
+
+migration:
+  cmi-directory: "plugins/CMI"
+  essentials-directory: "plugins/Essentials"
