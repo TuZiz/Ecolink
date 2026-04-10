@@ -5,6 +5,7 @@ api-version: "26.1.1"
 folia-supported: true
 authors: [ ymxc ]
 description: "Cross-server async economy plugin with PostgreSQL/MySQL storage and CMI/EssentialsX migration."
+softdepend: [ Vault, PlaceholderAPI ]
 
 commands:
   ecolink:
@@ -18,11 +19,20 @@ commands:
   pay:
     description: "Pay another player"
     usage: "/pay <player> <amount>"
+  baltop:
+    description: "Show the richest accounts"
+    usage: "/baltop [page]"
 
 permissions:
   ecolink.pay:
     default: true
   ecolink.balance.others:
+    default: op
+  ecolink.baltop:
+    default: true
+  ecolink.ledger:
+    default: true
+  ecolink.ledger.others:
     default: op
   ecolink.admin:
     default: op

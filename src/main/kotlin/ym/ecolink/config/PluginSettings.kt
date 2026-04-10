@@ -13,6 +13,9 @@ data class PluginSettings(
     val balanceScale: Int,
     val startingBalance: BigDecimal,
     val cacheTtlMillis: Long,
+    val feature: FeatureSettings,
+    val compatibility: CompatibilitySettings,
+    val redisSync: RedisSyncSettings,
     val storage: StorageSettings,
     val migration: MigrationSettings
 ) {
@@ -36,6 +39,30 @@ data class PluginSettings(
                 balanceScale = scale,
                 startingBalance = startingBalance.setScale(scale, RoundingMode.HALF_UP),
                 cacheTtlMillis = config.getLong("economy.cache-ttl-millis", 2_000L).coerceAtLeast(0L),
+                feature = FeatureSettings(
+                    topPageSize = max(5, config.getInt("feature.top-page-size", 10)),
+                    ledgerPageSize = max(5, config.getInt("feature.ledger-page-size", 10))
+                ),
+                compatibility = CompatibilitySettings(
+                    vault = VaultSettings(
+                        enabled = config.getBoolean("compatibility.vault.enabled", true),
+                        syncTimeoutMillis = config.getLong("compatibility.vault.sync-timeout-millis", 1_500L)
+                            .coerceAtLeast(250L)
+                    ),
+                    placeholderApi = PlaceholderSettings(
+                        enabled = config.getBoolean("compatibility.placeholderapi.enabled", true)
+                    )
+                ),
+                redisSync = RedisSyncSettings(
+                    enabled = config.getBoolean("sync.redis.enabled", false),
+                    host = config.getString("sync.redis.host", "127.0.0.1") ?: "127.0.0.1",
+                    port = config.getInt("sync.redis.port", 6379),
+                    database = config.getInt("sync.redis.database", 0),
+                    password = config.getString("sync.redis.password", "") ?: "",
+                    channel = config.getString("sync.redis.channel", "ecolink:balance-sync")
+                        ?: "ecolink:balance-sync",
+                    timeoutMillis = config.getLong("sync.redis.timeout-millis", 2_000L).coerceAtLeast(250L)
+                ),
                 storage = StorageSettings(
                     type = type,
                     host = config.getString("storage.host", "127.0.0.1") ?: "127.0.0.1",
@@ -85,4 +112,33 @@ data class StorageSettings(
 data class MigrationSettings(
     val cmiDataFolder: String,
     val essentialsDataFolder: String
+)
+
+data class FeatureSettings(
+    val topPageSize: Int,
+    val ledgerPageSize: Int
+)
+
+data class CompatibilitySettings(
+    val vault: VaultSettings,
+    val placeholderApi: PlaceholderSettings
+)
+
+data class VaultSettings(
+    val enabled: Boolean,
+    val syncTimeoutMillis: Long
+)
+
+data class PlaceholderSettings(
+    val enabled: Boolean
+)
+
+data class RedisSyncSettings(
+    val enabled: Boolean,
+    val host: String,
+    val port: Int,
+    val database: Int,
+    val password: String,
+    val channel: String,
+    val timeoutMillis: Long
 )

@@ -3,6 +3,7 @@ package ym.ecolink.storage
 import ym.ecolink.economy.AccountIdentity
 import ym.ecolink.economy.AccountRecord
 import ym.ecolink.economy.ImportedBalance
+import ym.ecolink.economy.LedgerEntry
 import ym.ecolink.economy.LedgerAction
 import ym.ecolink.economy.TransferReceipt
 import ym.ecolink.migration.SourceMigrationReport
@@ -58,4 +59,12 @@ interface EconomyRepository {
         source: String,
         serverId: String
     ): SourceMigrationReport
+
+    fun findTopAccounts(limit: Int, offset: Int): List<AccountRecord>
+
+    fun findLedgerEntries(
+        accountUuid: UUID,
+        limit: Int,
+        offset: Int
+    ): List<LedgerEntry>
 }

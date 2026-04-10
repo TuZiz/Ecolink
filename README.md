@@ -9,6 +9,9 @@ Ecolink 是一个面向 `Paper`、`Spigot`、`Folia` 的跨服经济插件。
 - 经济事务、迁移、缓存刷新走异步线程池
 - 支持从 `CMI` 与 `EssentialsX` 一键迁移余额数据
 - 通过共享数据库实现多服共用同一套经济账户
+- 可选接入 `Vault`
+- 可选接入 `PlaceholderAPI`
+- 可选接入 `Redis` 做跨服实时余额同步
 
 ## 当前特性
 
@@ -20,6 +23,11 @@ Ecolink 是一个面向 `Paper`、`Spigot`、`Folia` 的跨服经济插件。
 - `CMI sqlite` / `CMI mysql` 余额导入
 - `EssentialsX userdata/*.yml` 余额导入
 - 账变流水表
+- `Vault` 经济桥
+- `PlaceholderAPI` 占位符
+- `/baltop` 排行榜
+- `/ecolink ledger` 流水查询
+- `Redis pub/sub` 余额实时同步
 
 ## 数据库建议
 
@@ -38,15 +46,20 @@ Ecolink 是一个面向 `Paper`、`Spigot`、`Folia` 的跨服经济插件。
 - `/balance`
 - `/balance <player>`
 - `/pay <player> <amount>`
+- `/baltop [page]`
 - `/ecolink set <player> <amount>`
 - `/ecolink add <player> <amount>`
 - `/ecolink take <player> <amount>`
+- `/ecolink ledger [player] [page]`
 - `/ecolink migrate <cmi|essentials|all> [overwrite]`
 
 ## 权限
 
 - `ecolink.pay`
 - `ecolink.balance.others`
+- `ecolink.baltop`
+- `ecolink.ledger`
+- `ecolink.ledger.others`
 - `ecolink.admin`
 - `ecolink.migrate`
 
@@ -60,6 +73,14 @@ Ecolink 是一个面向 `Paper`、`Spigot`、`Folia` 的跨服经济插件。
 - `async.worker-threads`
 - `economy.currency-symbol`
 - `economy.starting-balance`
+- `feature.top-page-size`
+- `feature.ledger-page-size`
+- `compatibility.vault.enabled`
+- `compatibility.placeholderapi.enabled`
+- `sync.redis.enabled`
+- `sync.redis.host`
+- `sync.redis.port`
+- `sync.redis.channel`
 - `storage.type`
 - `storage.host`
 - `storage.port`
@@ -128,20 +149,21 @@ Ecolink 不会把数据库读写放在主线程。
 
 这比“所有代码都硬塞进异步线程”更符合 `Paper` / `Spigot` / `Folia` 的运行约束。
 
-## 现代化迭代建议
+需要说明的一点：
 
-如果继续做下一版，我建议优先上这几项：
+- `Vault` 本身是同步 API，所以 `Vault` 兼容层会走一个受限超时的兼容桥
+- 核心经济事务和数据库读写仍然保持异步实现
 
-- `Vault` 适配层：让商店、任务、拍卖、菜单插件直接接入
+## 下一步建议
+
+这一版已经把现代化基础设施铺好了，下一步我更建议往这几个方向继续扩：
+
 - Web 管理面板：账户检索、流水查询、冻结、手动修账
-- Redis 或数据库通知总线：把跨服余额变更从短 TTL 缓存升级成准实时推送
-- 排行榜与 Top Balance 缓存表：避免每次直接扫主账户表
-- 幂等事务 ID：为后台补偿、商城充值、Webhook 入账做去重保护
-- 双货币或多货币模型：金币、点券、绑定币拆分
-- 玩家账单查询命令：支持按时间、来源、类型筛选流水
-- Prometheus 指标：观察 DB 延迟、命令耗时、迁移成功率
-- PlaceholderAPI 支持：让菜单、全息、记分板直接显示余额
-- 审计日志导出：方便查黑钱、查异常转账、回滚事故
+- 幂等事务 ID：为商城充值、Webhook 入账、后台补单做去重
+- 多货币模型：金币、点券、绑定币分层
+- 排行榜缓存表：大服场景下进一步减轻主账户表排序压力
+- 审计导出和风控规则：大额转账告警、黑名单、批量回滚
+- Prometheus 指标：观察 DB 延迟、命令耗时、Redis 同步健康度
 
 ## 当前状态
 
@@ -151,5 +173,9 @@ Ecolink 不会把数据库读写放在主线程。
 - 跨服数据库层
 - CMI / EssentialsX 迁移
 - Paper / Spigot / Folia 兼容调度
+- Vault 兼容层
+- PlaceholderAPI 占位符
+- baltop 和流水查询
+- Redis 实时同步
 
 如果你要，我下一步可以继续把 `Vault + 排行榜 + PlaceholderAPI + Webhook 入账` 这一组一起补掉。

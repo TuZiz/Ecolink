@@ -2,6 +2,8 @@ package ym.ecolink
 
 import org.bukkit.command.CommandSender
 import org.bukkit.plugin.java.JavaPlugin
+import ym.ecolink.hook.papi.EcolinkPlaceholderExpansion
+import ym.ecolink.hook.vault.VaultHook
 import ym.ecolink.command.EcoCommand
 import ym.ecolink.config.PluginSettings
 import ym.ecolink.economy.EconomyService
@@ -10,6 +12,7 @@ import ym.ecolink.migration.MigrationService
 import ym.ecolink.platform.ServerTaskDispatcher
 import ym.ecolink.storage.EcolinkDataSourceFactory
 import ym.ecolink.storage.JdbcEconomyRepository
+import ym.ecolink.sync.RedisBalanceSyncService
 import ym.ecolink.util.colorize
 import java.util.concurrent.CompletableFuture
 import java.util.logging.Level
@@ -49,6 +52,10 @@ class Ecolink : JavaPlugin() {
             setExecutor(commandHandler)
             tabCompleter = commandHandler
         }
+        getCommand("baltop")?.apply {
+            setExecutor(commandHandler)
+            tabCompleter = commandHandler
+        }
 
         server.pluginManager.registerEvents(PlayerLifecycleListener(this), this)
 
@@ -68,6 +75,9 @@ class Ecolink : JavaPlugin() {
                 return@whenComplete
             }
             runtime = created
+            dispatcher.runGlobal {
+                installOptionalBridges(created)
+            }
             logger.info(
                 "Ecolink initialized. storage=${created.settings.storage.type.id}, " +
                     "serverId=${created.settings.serverId}"
@@ -100,7 +110,41 @@ class Ecolink : JavaPlugin() {
         repository.initialize()
         val economyService = EconomyService(settings, repository, dispatcher)
         val migrationService = MigrationService(settings, repository, dispatcher)
-        return PluginRuntime(settings, dataSource, repository, economyService, migrationService)
+        val redisSyncService = if (settings.redisSync.enabled) {
+            RedisBalanceSyncService(settings.serverId, settings.redisSync, economyService, logger).also { sync ->
+                economyService.setMutationListener(sync::publish)
+                sync.start()
+            }
+        } else {
+            null
+        }
+        return PluginRuntime(
+            settings = settings,
+            dataSource = dataSource,
+            repository = repository,
+            economyService = economyService,
+            migrationService = migrationService,
+            redisSyncService = redisSyncService
+        )
+    }
+
+    private fun installOptionalBridges(runtime: PluginRuntime) {
+        if (runtime.settings.compatibility.vault.enabled) {
+            val hook = VaultHook(this, runtime.settings, runtime.economyService)
+            if (hook.register()) {
+                runtime.vaultHook = hook
+                logger.info("Vault hook registered.")
+            }
+        }
+        if (runtime.settings.compatibility.placeholderApi.enabled &&
+            server.pluginManager.getPlugin("PlaceholderAPI") != null
+        ) {
+            val expansion = EcolinkPlaceholderExpansion(this, runtime.economyService)
+            if (expansion.register()) {
+                runtime.placeholderExpansion = expansion
+                logger.info("PlaceholderAPI expansion registered.")
+            }
+        }
     }
 
     private fun unwrap(error: Throwable): Throwable {
@@ -113,9 +157,16 @@ data class PluginRuntime(
     val dataSource: AutoCloseable,
     val repository: JdbcEconomyRepository,
     val economyService: EconomyService,
-    val migrationService: MigrationService
+    val migrationService: MigrationService,
+    val redisSyncService: RedisBalanceSyncService?
 ) {
+    var vaultHook: VaultHook? = null
+    var placeholderExpansion: EcolinkPlaceholderExpansion? = null
+
     fun shutdown() {
+        placeholderExpansion?.unregister()
+        vaultHook?.close()
+        redisSyncService?.close()
         dataSource.close()
     }
 }

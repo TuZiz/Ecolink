@@ -13,6 +13,27 @@ economy:
   starting-balance: "0.00"
   cache-ttl-millis: 2000
 
+feature:
+  top-page-size: 10
+  ledger-page-size: 10
+
+compatibility:
+  vault:
+    enabled: true
+    sync-timeout-millis: 1500
+  placeholderapi:
+    enabled: true
+
+sync:
+  redis:
+    enabled: false
+    host: "127.0.0.1"
+    port: 6379
+    database: 0
+    password: ""
+    channel: "ecolink:balance-sync"
+    timeout-millis: 2000
+
 storage:
   type: "postgresql"
   host: "127.0.0.1"

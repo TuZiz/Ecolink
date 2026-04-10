@@ -24,6 +24,19 @@ data class TransferReceipt(
     val to: AccountRecord
 )
 
+data class LedgerEntry(
+    val id: UUID,
+    val accountUuid: UUID,
+    val counterpartyUuid: UUID?,
+    val action: LedgerAction,
+    val amount: BigDecimal,
+    val balanceAfter: BigDecimal,
+    val actor: String?,
+    val reason: String?,
+    val sourceServer: String,
+    val createdAt: Instant
+)
+
 data class ImportedBalance(
     val uuid: UUID,
     val username: String,
@@ -40,6 +53,15 @@ enum class LedgerAction {
     TRANSFER_OUT,
     MIGRATION
 }
+
+data class BalanceSyncRecord(
+    val serverId: String,
+    val uuid: UUID,
+    val username: String,
+    val balance: BigDecimal,
+    val version: Long,
+    val updatedAt: Instant
+)
 
 class InsufficientFundsException(
     val currentBalance: BigDecimal,

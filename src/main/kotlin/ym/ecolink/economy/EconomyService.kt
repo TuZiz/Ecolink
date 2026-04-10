@@ -7,6 +7,7 @@ import java.math.BigDecimal
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
 
 class EconomyService(
     private val settings: PluginSettings,
@@ -16,6 +17,13 @@ class EconomyService(
 
     private val cache = ConcurrentHashMap<UUID, CachedAccount>()
     private val nameIndex = ConcurrentHashMap<String, UUID>()
+
+    @Volatile
+    private var mutationListener: ((BalanceSyncRecord) -> Unit)? = null
+
+    fun setMutationListener(listener: (BalanceSyncRecord) -> Unit) {
+        mutationListener = listener
+    }
 
     fun ensureAccount(identity: AccountIdentity): CompletableFuture<AccountRecord> {
         return dispatcher.supplyAsync {
@@ -78,7 +86,7 @@ class EconomyService(
         reason: String
     ): CompletableFuture<AccountRecord> {
         return dispatcher.supplyAsync {
-            remember(
+            val updated = remember(
                 repository.adjustBalance(
                     identity = target,
                     delta = settings.normalize(amount),
@@ -90,6 +98,8 @@ class EconomyService(
                     requireSufficient = false
                 )
             )
+            publish(updated)
+            updated
         }
     }
 
@@ -100,7 +110,7 @@ class EconomyService(
         reason: String
     ): CompletableFuture<AccountRecord> {
         return dispatcher.supplyAsync {
-            remember(
+            val updated = remember(
                 repository.adjustBalance(
                     identity = target,
                     delta = settings.normalize(amount).negate(),
@@ -112,6 +122,8 @@ class EconomyService(
                     requireSufficient = true
                 )
             )
+            publish(updated)
+            updated
         }
     }
 
@@ -122,7 +134,7 @@ class EconomyService(
         reason: String
     ): CompletableFuture<AccountRecord> {
         return dispatcher.supplyAsync {
-            remember(
+            val updated = remember(
                 repository.setBalance(
                     identity = target,
                     amount = settings.normalize(amount),
@@ -132,6 +144,8 @@ class EconomyService(
                     reason = reason
                 )
             )
+            publish(updated)
+            updated
         }
     }
 
@@ -155,16 +169,81 @@ class EconomyService(
                 actor = actor,
                 reason = reason
             )
-            remember(receipt.from)
-            remember(receipt.to)
-            receipt
+            val updatedSource = remember(receipt.from)
+            val updatedTarget = remember(receipt.to)
+            publish(updatedSource)
+            publish(updatedTarget)
+            TransferReceipt(updatedSource, updatedTarget)
         }
+    }
+
+    fun getTopBalances(page: Int): CompletableFuture<List<AccountRecord>> {
+        return dispatcher.supplyAsync {
+            val safePage = page.coerceAtLeast(1)
+            val limit = settings.feature.topPageSize
+            val offset = (safePage - 1) * limit
+            repository.findTopAccounts(limit, offset).map(::remember)
+        }
+    }
+
+    fun getLedger(identity: AccountIdentity, page: Int): CompletableFuture<List<LedgerEntry>> {
+        return dispatcher.supplyAsync {
+            val safePage = page.coerceAtLeast(1)
+            val limit = settings.feature.ledgerPageSize
+            val offset = (safePage - 1) * limit
+            repository.findLedgerEntries(identity.uuid, limit, offset)
+        }
+    }
+
+    fun peekCached(uuid: UUID): AccountRecord? {
+        val cached = cache[uuid]
+        return if (cached != null && cached.isFresh()) cached.record else null
+    }
+
+    fun peekCached(selector: String): AccountRecord? {
+        val uuid = nameIndex[selector.lowercase()] ?: return null
+        return peekCached(uuid)
+    }
+
+    fun rememberRemote(record: BalanceSyncRecord) {
+        val incoming = AccountRecord(
+            uuid = record.uuid,
+            username = record.username,
+            balance = settings.normalize(record.balance),
+            version = record.version,
+            updatedAt = record.updatedAt
+        )
+        val current = cache[record.uuid]
+        if (current == null || current.record.version <= incoming.version || !current.isFresh()) {
+            remember(incoming)
+        }
+    }
+
+    fun awaitAccount(identity: AccountIdentity): AccountRecord {
+        return getBalance(identity).get(settings.compatibility.vault.syncTimeoutMillis, TimeUnit.MILLISECONDS)
+    }
+
+    fun awaitIdentity(selector: String): AccountIdentity? {
+        return resolveIdentity(selector).get(settings.compatibility.vault.syncTimeoutMillis, TimeUnit.MILLISECONDS)
     }
 
     private fun remember(record: AccountRecord): AccountRecord {
         cache[record.uuid] = CachedAccount(record, System.currentTimeMillis() + settings.cacheTtlMillis)
         nameIndex[record.username.lowercase()] = record.uuid
         return record
+    }
+
+    private fun publish(record: AccountRecord) {
+        mutationListener?.invoke(
+            BalanceSyncRecord(
+                serverId = settings.serverId,
+                uuid = record.uuid,
+                username = record.username,
+                balance = record.balance,
+                version = record.version,
+                updatedAt = record.updatedAt
+            )
+        )
     }
 
     private fun parseUuid(raw: String): UUID? {

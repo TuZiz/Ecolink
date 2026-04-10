@@ -4,6 +4,7 @@ import ym.ecolink.economy.AccountIdentity
 import ym.ecolink.economy.AccountRecord
 import ym.ecolink.economy.ImportedBalance
 import ym.ecolink.economy.InsufficientFundsException
+import ym.ecolink.economy.LedgerEntry
 import ym.ecolink.economy.LedgerAction
 import ym.ecolink.economy.TransferReceipt
 import ym.ecolink.migration.SourceMigrationReport
@@ -273,6 +274,68 @@ class JdbcEconomyRepository(
             failed = failed,
             sampleErrors = errors
         )
+    }
+
+    override fun findTopAccounts(limit: Int, offset: Int): List<AccountRecord> {
+        dataSource.connection.use { connection ->
+            connection.autoCommit = true
+            connection.prepareStatement(
+                "SELECT uuid, username, balance, version, updated_at FROM $accountsTable ORDER BY balance DESC, username ASC LIMIT ? OFFSET ?"
+            ).use { statement ->
+                statement.setInt(1, limit)
+                statement.setInt(2, offset)
+                statement.executeQuery().use { resultSet ->
+                    val results = mutableListOf<AccountRecord>()
+                    while (resultSet.next()) {
+                        results += mapAccount(
+                            resultSet.getString("uuid"),
+                            resultSet.getString("username"),
+                            resultSet.getBigDecimal("balance"),
+                            resultSet.getLong("version"),
+                            resultSet.getTimestamp("updated_at")
+                        )
+                    }
+                    return results
+                }
+            }
+        }
+    }
+
+    override fun findLedgerEntries(accountUuid: UUID, limit: Int, offset: Int): List<LedgerEntry> {
+        dataSource.connection.use { connection ->
+            connection.autoCommit = true
+            connection.prepareStatement(
+                """
+                SELECT id, account_uuid, counterparty_uuid, action, amount, balance_after, actor, reason, source_server, created_at
+                FROM $ledgerTable
+                WHERE account_uuid = ?
+                ORDER BY created_at DESC
+                LIMIT ? OFFSET ?
+                """.trimIndent()
+            ).use { statement ->
+                statement.setString(1, accountUuid.toString())
+                statement.setInt(2, limit)
+                statement.setInt(3, offset)
+                statement.executeQuery().use { resultSet ->
+                    val results = mutableListOf<LedgerEntry>()
+                    while (resultSet.next()) {
+                        results += LedgerEntry(
+                            id = UUID.fromString(resultSet.getString("id")),
+                            accountUuid = UUID.fromString(resultSet.getString("account_uuid")),
+                            counterpartyUuid = resultSet.getString("counterparty_uuid")?.let(UUID::fromString),
+                            action = LedgerAction.valueOf(resultSet.getString("action")),
+                            amount = normalize(resultSet.getBigDecimal("amount")),
+                            balanceAfter = normalize(resultSet.getBigDecimal("balance_after")),
+                            actor = resultSet.getString("actor"),
+                            reason = resultSet.getString("reason"),
+                            sourceServer = resultSet.getString("source_server"),
+                            createdAt = resultSet.getTimestamp("created_at").toInstant()
+                        )
+                    }
+                    return results
+                }
+            }
+        }
     }
 
     private fun createAccount(
